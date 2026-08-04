@@ -5,16 +5,66 @@ import queue
 import os
 from typing import List
 
-from presets import GAME_PRESETS, fetch_preset_targets
+from presets import DEFAULT_GAME_PRESETS, fetch_preset_targets, search_app_hosts_online, load_history
 from fuzzer_engine import FuzzerEngine, WinwsParams
+from updater import check_and_download_github_exe
+
+
+class HistoryDialog(tk.Toplevel):
+    """Диалоговое окно истории добавленных программ и игр."""
+    def __init__(self, parent, on_select_callback):
+        super().__init__(parent)
+        self.title("История добавленных программ и игр")
+        self.geometry("520x360")
+        self.resizable(False, False)
+        self.on_select_callback = on_select_callback
+
+        self._build_ui()
+        self.transient(parent)
+        self.grab_set()
+
+    def _build_ui(self):
+        container = ttk.Frame(self, padding=15)
+        container.pack(fill=tk.BOTH, expand=True)
+
+        ttk.Label(container, text="История ранее найденных программ:", font=("Segoe UI", 10, "bold")).pack(anchor=tk.W, pady=(0, 5))
+
+        frame_list = ttk.Frame(container)
+        frame_list.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
+
+        self.listbox = tk.Listbox(frame_list, font=("Consolas", 9), selectmode=tk.SINGLE)
+        self.listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        scrollbar = ttk.Scrollbar(frame_list, orient=tk.VERTICAL, command=self.listbox.yview)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.listbox.config(yscrollcommand=scrollbar.set)
+
+        self.history_data = load_history()
+        for app_name, hosts in self.history_data.items():
+            self.listbox.insert(tk.END, f"{app_name} ({len(hosts)} хостов/IP)")
+
+        btn_frame = ttk.Frame(container)
+        btn_frame.pack(fill=tk.X)
+
+        ttk.Button(btn_frame, text="Загрузить хосты в фуззер", style="Accent.TButton", command=self._load_selected).pack(side=tk.RIGHT, padx=(5, 0))
+        ttk.Button(btn_frame, text="Закрыть", command=self.destroy).pack(side=tk.RIGHT)
+
+    def _load_selected(self):
+        selection = self.listbox.curselection()
+        if selection:
+            idx = selection[0]
+            app_name = list(self.history_data.keys())[idx]
+            hosts = self.history_data[app_name]
+            self.on_select_callback(app_name, hosts)
+            self.destroy()
 
 
 class ZapretFuzzerApp:
     def __init__(self, root: tk.Tk):
         self.root = root
         self.root.title("Zapret Fuzzer & Strategy Tuner — GUI Edition")
-        self.root.geometry("900x680")
-        self.root.minsize(800, 600)
+        self.root.geometry("960x740")
+        self.root.minsize(860, 650)
 
         self.bat_path_var = tk.StringVar(value="general (ALT11).bat")
         self.status_var = tk.StringVar(value="Готов к работе")
@@ -41,8 +91,14 @@ class ZapretFuzzerApp:
         style.configure("Accent.TButton", font=("Segoe UI", 10, "bold"), background="#2a9d8f", foreground="white")
         style.map("Accent.TButton", background=[('active', '#218380'), ('disabled', '#cccccc')])
 
-        style.configure("Preset.TButton", font=("Segoe UI", 9, "bold"), padding=6, background="#457b9d", foreground="white")
+        style.configure("Preset.TButton", font=("Segoe UI", 9, "bold"), padding=5, background="#457b9d", foreground="white")
         style.map("Preset.TButton", background=[('active', '#1d3557')])
+
+        style.configure("Update.TButton", font=("Segoe UI", 9, "bold"), background="#e76f51", foreground="white")
+        style.map("Update.TButton", background=[('active', '#f4a261')])
+
+        style.configure("History.TButton", font=("Segoe UI", 9, "bold"), background="#6c5ce7", foreground="white")
+        style.map("History.TButton", background=[('active', '#a29bfe')])
 
         style.configure("Stop.TButton", font=("Segoe UI", 10, "bold"), background="#e63946", foreground="white")
         style.map("Stop.TButton", background=[('active', '#c1121f')])
@@ -51,23 +107,29 @@ class ZapretFuzzerApp:
         main_container = ttk.Frame(self.root, padding=10)
         main_container.pack(fill=tk.BOTH, expand=True)
 
-        top_frame = ttk.LabelFrame(main_container, text=" Настройки файла стратегии ", padding=10)
+        top_frame = ttk.LabelFrame(main_container, text=" Настройки файла стратегии и управление ", padding=10)
         top_frame.pack(fill=tk.X, pady=(0, 8))
 
-        ttk.Label(top_frame, text="Целевой .bat файл:").grid(row=0, column=0, sticky=tk.W, padx=(0, 5))
-        bat_entry = ttk.Entry(top_frame, textvariable=self.bat_path_var, width=50)
+        ttk.Label(top_frame, text="Файл стратегии:").grid(row=0, column=0, sticky=tk.W, padx=(0, 5))
+        bat_entry = ttk.Entry(top_frame, textvariable=self.bat_path_var, width=38)
         bat_entry.grid(row=0, column=1, sticky=tk.EW, padx=5)
 
         browse_btn = ttk.Button(top_frame, text="Обзор...", command=self._browse_bat)
-        browse_btn.grid(row=0, column=2, padx=5)
+        browse_btn.grid(row=0, column=2, padx=3)
 
-        ttk.Label(top_frame, text="Статус winws.exe:").grid(row=0, column=3, padx=(15, 5))
+        history_btn = ttk.Button(top_frame, text="📜 История", style="History.TButton", command=self._open_history_dialog)
+        history_btn.grid(row=0, column=3, padx=3)
+
+        update_btn = ttk.Button(top_frame, text="🔄 Обновить", style="Update.TButton", command=self._trigger_update)
+        update_btn.grid(row=0, column=4, padx=3)
+
+        ttk.Label(top_frame, text="winws.exe:").grid(row=0, column=5, padx=(10, 5))
         self.winws_status_lbl = ttk.Label(top_frame, textvariable=self.winws_status_var, font=("Segoe UI", 9, "bold"), foreground="#e63946")
-        self.winws_status_lbl.grid(row=0, column=4, sticky=tk.W)
+        self.winws_status_lbl.grid(row=0, column=6, sticky=tk.W)
 
         top_frame.columnconfigure(1, weight=1)
 
-        preset_frame = ttk.LabelFrame(main_container, text=" Быстрое добавление хостов (1-клик пресеты) ", padding=10)
+        preset_frame = ttk.LabelFrame(main_container, text=" Поиск и быстрый выбор приложений/игр ", padding=10)
         preset_frame.pack(fill=tk.X, pady=(0, 8))
 
         preset_btn_container = ttk.Frame(preset_frame)
@@ -88,20 +150,20 @@ class ZapretFuzzerApp:
                 style="Preset.TButton",
                 command=lambda p=name: self._add_preset_hosts(p)
             )
-            btn.grid(row=0, column=i, padx=4, pady=2, sticky=tk.EW)
+            btn.grid(row=0, column=i, padx=3, pady=2, sticky=tk.EW)
             preset_btn_container.columnconfigure(i, weight=1)
 
-        custom_btn = ttk.Button(
+        search_app_btn = ttk.Button(
             preset_btn_container,
-            text="➕ Свой хост / IP",
-            command=self._add_custom_host
+            text="🔎 Найти приложение по имени",
+            command=self._search_app_by_name
         )
-        custom_btn.grid(row=0, column=len(presets_list), padx=4, pady=2)
+        search_app_btn.grid(row=0, column=len(presets_list), padx=3, pady=2)
 
         middle_frame = ttk.Frame(main_container)
         middle_frame.pack(fill=tk.BOTH, expand=False, pady=(0, 8))
 
-        hosts_frame = ttk.LabelFrame(middle_frame, text=" Целевые хосты и IP адреса ", padding=8)
+        hosts_frame = ttk.LabelFrame(middle_frame, text=" Целевые хосты и IP адреса (проверяются по 12 хостов одновременно) ", padding=8)
         hosts_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 5))
 
         self.hosts_listbox = tk.Listbox(hosts_frame, height=7, selectmode=tk.SINGLE, font=("Consolas", 9))
@@ -114,7 +176,7 @@ class ZapretFuzzerApp:
         hosts_btn_frame = ttk.Frame(hosts_frame)
         hosts_btn_frame.pack(fill=tk.X, pady=(5, 0))
 
-        ttk.Button(hosts_btn_frame, text="Удалить выбранное", command=self._remove_selected_host).pack(side=tk.LEFT, padx=2)
+        ttk.Button(hosts_btn_frame, text="Удалить выбранный", command=self._remove_selected_host).pack(side=tk.LEFT, padx=2)
         ttk.Button(hosts_btn_frame, text="Очистить список", command=self._clear_hosts).pack(side=tk.LEFT, padx=2)
 
         params_frame = ttk.LabelFrame(middle_frame, text=" Панель параметров ", padding=8)
@@ -140,7 +202,7 @@ class ZapretFuzzerApp:
 
         self.start_btn = ttk.Button(
             ctrl_frame,
-            text="🚀 Запустить подбор стратегии (Фуззинг)",
+            text="🚀 Запустить подбор стратегии (12 параллельных целей)",
             style="Accent.TButton",
             command=self._start_fuzzing
         )
@@ -168,6 +230,61 @@ class ZapretFuzzerApp:
         status_bar = ttk.Label(self.root, textvariable=self.status_var, relief=tk.SUNKEN, anchor=tk.W, padding=3)
         status_bar.pack(side=tk.BOTTOM, fill=tk.X)
 
+    def _search_app_by_name(self):
+        app_name = simpledialog.askstring("Поиск программы", "Введите название программы или игры (например, Telegram или Apex Legends):")
+        if app_name and app_name.strip():
+            app_name = app_name.strip()
+            self.log_message(f"[*] Поиск хостов в интернете для программы '{app_name}'...")
+            self.status_var.set(f"Поиск хостов для {app_name}...")
+
+            def worker():
+                hosts = search_app_hosts_online(app_name)
+                self.root.after(0, lambda: self._on_app_hosts_found(app_name, hosts))
+
+            threading.Thread(target=worker, daemon=True).start()
+
+    def _on_app_hosts_found(self, app_name: str, hosts: List[str]):
+        if not hosts:
+            self.log_message(f"[!] Для программы '{app_name}' не удалось автоматически найти хосты.")
+            messagebox.showinfo("Результат", f"Для '{app_name}' не найдены хосты в DNS. Попробуйте ввести точный домен.")
+            return
+
+        added_count = 0
+        for h in hosts:
+            if h not in self.target_hosts:
+                self.target_hosts.append(h)
+                self.hosts_listbox.insert(tk.END, h)
+                added_count += 1
+
+        self.log_message(f"[+] Для '{app_name}' найдено и добавлено {added_count} хостов/IP (сохранено в историю).")
+        self.status_var.set(f"Добавлено {added_count} хостов для {app_name}")
+
+    def _open_history_dialog(self):
+        HistoryDialog(self.root, on_select_callback=self._on_history_hosts_selected)
+
+    def _on_history_hosts_selected(self, app_name: str, hosts: List[str]):
+        added_count = 0
+        for h in hosts:
+            if h not in self.target_hosts:
+                self.target_hosts.append(h)
+                self.hosts_listbox.insert(tk.END, h)
+                added_count += 1
+        self.log_message(f"[+] Из истории '{app_name}' загружено {added_count} хостов.")
+
+    def _trigger_update(self):
+        if not messagebox.askyesno("Обновление", "Запустить обновление fuzzer.exe с GitHub?\nТекущий процесс будет перезапущен с новой версией."):
+            return
+
+        self.log_message("[*] Загрузка обновленного fuzzer.exe с GitHub...")
+        self.status_var.set("Скачивание fuzzer.exe...")
+
+        def worker():
+            success, msg = check_and_download_github_exe()
+            if not success:
+                self.root.after(0, lambda: self.log_message(f"[!] Ошибка обновления: {msg}"))
+
+        threading.Thread(target=worker, daemon=True).start()
+
     def _browse_bat(self):
         file_selected = filedialog.askopenfilename(
             title="Выберите батник стратегии Zapret",
@@ -178,8 +295,8 @@ class ZapretFuzzerApp:
             self._update_params_display()
 
     def _add_preset_hosts(self, preset_name: str):
-        self.log_message(f"[*] Загрузка пресета '{preset_name}'...")
-        self.status_var.set(f"Поиск IP адресов и хостов для {preset_name}...")
+        self.log_message(f"[*] Загрузка хостов и IP для '{preset_name}'...")
+        self.status_var.set(f"Поиск IP адресов для {preset_name}...")
 
         def worker():
             targets = fetch_preset_targets(preset_name, resolve_ips=True)
@@ -195,17 +312,8 @@ class ZapretFuzzerApp:
                 self.hosts_listbox.insert(tk.END, host)
                 added_count += 1
 
-        self.log_message(f"[+] Для '{preset_name}' успешно добавлено {added_count} хостов/IP (всего: {len(self.target_hosts)}).")
+        self.log_message(f"[+] Для '{preset_name}' добавлено {added_count} новых хостов/IP (всего: {len(self.target_hosts)}).")
         self.status_var.set(f"Добавлено {added_count} хостов для {preset_name}")
-
-    def _add_custom_host(self):
-        host = simpledialog.askstring("Добавление хоста", "Введите домен или IP адрес:")
-        if host and host.strip():
-            host = host.strip()
-            if host not in self.target_hosts:
-                self.target_hosts.append(host)
-                self.hosts_listbox.insert(tk.END, host)
-                self.log_message(f"[+] Добавлен хост: {host}")
 
     def _remove_selected_host(self):
         selection = self.hosts_listbox.curselection()
@@ -248,7 +356,7 @@ class ZapretFuzzerApp:
 
         self.start_btn.config(state=tk.DISABLED)
         self.stop_btn.config(state=tk.NORMAL)
-        self.status_var.set("Фуззинг в процессе...")
+        self.status_var.set("Фуззинг в процессе (12 хостов)...")
 
         self.engine = FuzzerEngine(
             bat_path=bat_file,
@@ -304,3 +412,4 @@ class ZapretFuzzerApp:
             self.root.after(2000, check)
 
         self.root.after(1000, check)
+
