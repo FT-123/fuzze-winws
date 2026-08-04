@@ -56,12 +56,14 @@ DEFAULT_GAME_PRESETS: Dict[str, Dict[str, List[str]]] = {
             "steamcontent.com"
         ]
     },
-    "Roblox": {
-        "description": "Roblox авторизация и игровые сервера",
+    "Telegram": {
+        "description": "Telegram мессенджер, голос и веб-версия",
         "domains": [
-            "roblox.com",
-            "rbxcdn.com",
-            "roblox.cn"
+            "t.me",
+            "telegram.org",
+            "telegram.me",
+            "web.telegram.org",
+            "api.telegram.org"
         ]
     }
 }
@@ -118,11 +120,10 @@ def search_app_hosts_online(app_name: str) -> List[str]:
 
         # Известные сопоставления популярных сервисов и игр
         known_aliases = {
-            "telegram": ["t.me", "telegram.org", "telegram.me"],
+            "telegram": ["t.me", "telegram.org", "telegram.me", "web.telegram.org"],
             "steam": ["steampowered.com", "steamcommunity.com", "steamcontent.com"],
             "discord": ["discord.com", "discord.gg", "discordapp.com"],
             "youtube": ["youtube.com", "googlevideo.com", "ytimg.com"],
-            "roblox": ["roblox.com", "rbxcdn.com"],
             "genshin": ["hoyoverse.com", "mihoyo.com", "genshinimpact.com"],
             "apex": ["ea.com", "respawn.com"],
             "valorant": ["riotgames.com", "pvp.net"],

@@ -62,7 +62,7 @@ class HistoryDialog(tk.Toplevel):
 class ZapretFuzzerApp:
     def __init__(self, root: tk.Tk):
         self.root = root
-        self.root.title("Zapret Fuzzer & Strategy Tuner — GUI Edition")
+        self.root.title("Zapret Fuzzer & Strategy Tuner — ver 0.0.4")
         self.root.geometry("960x740")
         self.root.minsize(860, 650)
 
@@ -140,7 +140,7 @@ class ZapretFuzzerApp:
             ("💬 Discord", "Discord"),
             ("📺 YouTube", "YouTube"),
             ("🎮 Steam", "Steam"),
-            ("🎲 Roblox", "Roblox")
+            ("✈️ Telegram", "Telegram")
         ]
 
         for i, (label, name) in enumerate(presets_list):
@@ -163,7 +163,7 @@ class ZapretFuzzerApp:
         middle_frame = ttk.Frame(main_container)
         middle_frame.pack(fill=tk.BOTH, expand=False, pady=(0, 8))
 
-        hosts_frame = ttk.LabelFrame(middle_frame, text=" Целевые хосты и IP адреса (проверяются по 12 хостов одновременно) ", padding=8)
+        hosts_frame = ttk.LabelFrame(middle_frame, text=" Целевые хосты и IP адреса (проверяются <= 12 хостов за раз, минимум 8 успешных) ", padding=8)
         hosts_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 5))
 
         self.hosts_listbox = tk.Listbox(hosts_frame, height=7, selectmode=tk.SINGLE, font=("Consolas", 9))
@@ -202,7 +202,7 @@ class ZapretFuzzerApp:
 
         self.start_btn = ttk.Button(
             ctrl_frame,
-            text="🚀 Запустить подбор стратегии (12 параллельных целей)",
+            text="🚀 Запустить подбор стратегии (до 12 параллельных целей)",
             style="Accent.TButton",
             command=self._start_fuzzing
         )
@@ -356,7 +356,7 @@ class ZapretFuzzerApp:
 
         self.start_btn.config(state=tk.DISABLED)
         self.stop_btn.config(state=tk.NORMAL)
-        self.status_var.set("Фуззинг в процессе (12 хостов)...")
+        self.status_var.set("Фуззинг в процессе...")
 
         self.engine = FuzzerEngine(
             bat_path=bat_file,
