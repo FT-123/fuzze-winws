@@ -62,9 +62,9 @@ class HistoryDialog(tk.Toplevel):
 class ZapretFuzzerApp:
     def __init__(self, root: tk.Tk):
         self.root = root
-        self.root.title("Zapret Fuzzer & Strategy Tuner — ver 0.0.4")
-        self.root.geometry("960x740")
-        self.root.minsize(860, 650)
+        self.root.title("Zapret Fuzzer & Strategy Tuner — ver 0.0.5")
+        self.root.geometry("980x780")
+        self.root.minsize(880, 680)
 
         self.bat_path_var = tk.StringVar(value="general (ALT11).bat")
         self.status_var = tk.StringVar(value="Готов к работе")
@@ -103,15 +103,22 @@ class ZapretFuzzerApp:
         style.configure("Stop.TButton", font=("Segoe UI", 10, "bold"), background="#e63946", foreground="white")
         style.map("Stop.TButton", background=[('active', '#c1121f')])
 
+        style.configure("SvcStart.TButton", font=("Segoe UI", 9, "bold"), background="#2b9348", foreground="white")
+        style.map("SvcStart.TButton", background=[('active', '#55a630')])
+
+        style.configure("SvcReset.TButton", font=("Segoe UI", 9, "bold"), background="#d90429", foreground="white")
+        style.map("SvcReset.TButton", background=[('active', '#ef233c')])
+
     def _build_ui(self):
         main_container = ttk.Frame(self.root, padding=10)
         main_container.pack(fill=tk.BOTH, expand=True)
 
-        top_frame = ttk.LabelFrame(main_container, text=" Настройки файла стратегии и управление ", padding=10)
+        top_frame = ttk.LabelFrame(main_container, text=" Настройки файла стратегии и управление winws ", padding=10)
         top_frame.pack(fill=tk.X, pady=(0, 8))
 
+        # Строка 0: Путь к файлу стратегии + статус winws + обновление
         ttk.Label(top_frame, text="Файл стратегии:").grid(row=0, column=0, sticky=tk.W, padx=(0, 5))
-        bat_entry = ttk.Entry(top_frame, textvariable=self.bat_path_var, width=38)
+        bat_entry = ttk.Entry(top_frame, textvariable=self.bat_path_var, width=36)
         bat_entry.grid(row=0, column=1, sticky=tk.EW, padx=5)
 
         browse_btn = ttk.Button(top_frame, text="Обзор...", command=self._browse_bat)
@@ -123,11 +130,22 @@ class ZapretFuzzerApp:
         update_btn = ttk.Button(top_frame, text="🔄 Обновить", style="Update.TButton", command=self._trigger_update)
         update_btn.grid(row=0, column=4, padx=3)
 
-        ttk.Label(top_frame, text="winws.exe:").grid(row=0, column=5, padx=(10, 5))
+        ttk.Label(top_frame, text="Статус:").grid(row=0, column=5, padx=(10, 5))
         self.winws_status_lbl = ttk.Label(top_frame, textvariable=self.winws_status_var, font=("Segoe UI", 9, "bold"), foreground="#e63946")
         self.winws_status_lbl.grid(row=0, column=6, sticky=tk.W)
 
         top_frame.columnconfigure(1, weight=1)
+
+        # Строка 1: Панель быстрого управления службой winws и WinDivert
+        svc_frame = ttk.Frame(top_frame)
+        svc_frame.grid(row=1, column=0, columnspan=7, sticky=tk.EW, pady=(8, 0))
+
+        ttk.Label(svc_frame, text="Служба winws:", font=("Segoe UI", 9, "bold")).pack(side=tk.LEFT, padx=(0, 8))
+
+        ttk.Button(svc_frame, text="▶ Запустить", style="SvcStart.TButton", command=self._start_winws_service).pack(side=tk.LEFT, padx=3)
+        ttk.Button(svc_frame, text="⏹ Остановить", command=self._stop_winws_service).pack(side=tk.LEFT, padx=3)
+        ttk.Button(svc_frame, text="🔄 Перезапустить", command=self._restart_winws_service).pack(side=tk.LEFT, padx=3)
+        ttk.Button(svc_frame, text="🧹 Сброс WinDivert", style="SvcReset.TButton", command=self._reset_windivert_service).pack(side=tk.LEFT, padx=(15, 3))
 
         preset_frame = ttk.LabelFrame(main_container, text=" Поиск и быстрый выбор приложений/игр ", padding=10)
         preset_frame.pack(fill=tk.X, pady=(0, 8))
@@ -163,7 +181,7 @@ class ZapretFuzzerApp:
         middle_frame = ttk.Frame(main_container)
         middle_frame.pack(fill=tk.BOTH, expand=False, pady=(0, 8))
 
-        hosts_frame = ttk.LabelFrame(middle_frame, text=" Целевые хосты и IP адреса (проверяются <= 12 хостов за раз, минимум 8 успешных) ", padding=8)
+        hosts_frame = ttk.LabelFrame(middle_frame, text=" Целевые хосты и IP адреса (проверяются <= 12 хостов за раз, порог: 8) ", padding=8)
         hosts_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 5))
 
         self.hosts_listbox = tk.Listbox(hosts_frame, height=7, selectmode=tk.SINGLE, font=("Consolas", 9))
@@ -202,7 +220,7 @@ class ZapretFuzzerApp:
 
         self.start_btn = ttk.Button(
             ctrl_frame,
-            text="🚀 Запустить подбор стратегии (до 12 параллельных целей)",
+            text="🚀 Запустить подбор стратегии (пробив с замером задержки)",
             style="Accent.TButton",
             command=self._start_fuzzing
         )
@@ -229,6 +247,36 @@ class ZapretFuzzerApp:
 
         status_bar = ttk.Label(self.root, textvariable=self.status_var, relief=tk.SUNKEN, anchor=tk.W, padding=3)
         status_bar.pack(side=tk.BOTTOM, fill=tk.X)
+
+    def _start_winws_service(self):
+        bat = self.bat_path_var.get()
+        if not os.path.exists(bat):
+            messagebox.showerror("Ошибка", f"Файл '{bat}' не найден!")
+            return
+        self.log_message(f"[*] Запуск winws.exe ({bat})...")
+        alive = FuzzerEngine.start_winws(bat)
+        if alive:
+            self.log_message("[+] winws.exe успешно запущен!")
+            self.status_var.set("winws.exe запущен")
+        else:
+            self.log_message("[!] Не удалось запустить winws.exe.")
+            self.status_var.set("Ошибка запуска winws.exe")
+
+    def _stop_winws_service(self):
+        self.log_message("[*] Остановка winws.exe...")
+        FuzzerEngine.stop_winws()
+        self.log_message("[-] winws.exe остановлен.")
+        self.status_var.set("winws.exe остановлен")
+
+    def _restart_winws_service(self):
+        self._stop_winws_service()
+        self.root.after(1000, self._start_winws_service)
+
+    def _reset_windivert_service(self):
+        self.log_message("[*] Сброс драйвера WinDivert и принудительная остановка winws...")
+        FuzzerEngine.reset_windivert()
+        self.log_message("[+] Драйвер WinDivert сброшен.")
+        self.status_var.set("WinDivert сброшен")
 
     def _search_app_by_name(self):
         app_name = simpledialog.askstring("Поиск программы", "Введите название программы или игры (например, Telegram или Apex Legends):")
