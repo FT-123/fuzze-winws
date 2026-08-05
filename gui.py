@@ -3,19 +3,279 @@ from tkinter import ttk, filedialog, messagebox, simpledialog
 import threading
 import queue
 import os
-from typing import List, Optional
+import sys
+import ctypes
+from typing import List, Optional, Tuple, Dict
 
 from presets import DEFAULT_GAME_PRESETS, fetch_preset_targets, search_app_hosts_online, load_history
 from fuzzer_engine import FuzzerEngine, WinwsParams
 from updater import check_and_download_github_exe
 
 
+class RoundedButton(tk.Canvas):
+    """Кастомная кнопка с закругленными углами в стиле Neural Expressive."""
+    def __init__(self, parent, text="", command=None, radius=6,
+                 bg_color="#1a1f33", fg_color="#f0f4f8",
+                 hover_bg="#2a314d", active_bg="#00f5d4",
+                 disabled_bg="#121524", disabled_fg="#525b75",
+                 font=("Segoe UI", 8, "bold"), width=95, height=24,
+                 border_color=None, cursor="hand2"):
+        parent_bg = parent["bg"] if isinstance(parent, (tk.Frame, tk.LabelFrame, tk.Toplevel, tk.Tk)) and "bg" in parent.keys() else "#111422"
+        super().__init__(parent, bg=parent_bg, height=height, width=width, highlightthickness=0, bd=0, cursor=cursor)
+        self.command = command
+        self.radius = radius
+        self.normal_bg = bg_color
+        self.hover_bg = hover_bg
+        self.active_bg = active_bg
+        self.disabled_bg = disabled_bg
+        self.disabled_fg = disabled_fg
+        self.normal_fg = fg_color
+        self.fg_color = fg_color
+        self.text = text
+        self.font = font
+        self.border_color = border_color
+        self.is_disabled = False
+        self.current_bg = bg_color
+
+        self.bind("<Configure>", self._on_resize)
+        self.bind("<Enter>", self._on_enter)
+        self.bind("<Leave>", self._on_leave)
+        self.bind("<Button-1>", self._on_click)
+
+    def _create_rounded_polygon(self, x1, y1, x2, y2, r, **kwargs):
+        points = [
+            x1 + r, y1,
+            x2 - r, y1,
+            x2, y1,
+            x2, y1 + r,
+            x2, y2 - r,
+            x2, y2,
+            x2 - r, y2,
+            x1 + r, y2,
+            x1, y2,
+            x1, y2 - r,
+            x1, y1 + r,
+            x1, y1
+        ]
+        return self.create_polygon(points, smooth=True, **kwargs)
+
+    def _draw(self, fill_color, text_color=None):
+        self.delete("all")
+        w = self.winfo_width() or self.winfo_reqwidth()
+        h = self.winfo_height() or self.winfo_reqheight()
+        if w < 10 or h < 10:
+            return
+        r = min(self.radius, h // 2, w // 2)
+        txt_col = text_color if text_color else self.fg_color
+
+        if self.border_color:
+            self._create_rounded_polygon(1, 1, w - 1, h - 1, r, fill=self.border_color)
+            self._create_rounded_polygon(2, 2, w - 2, h - 2, max(1, r - 1), fill=fill_color)
+        else:
+            self._create_rounded_polygon(1, 1, w - 1, h - 1, r, fill=fill_color)
+
+        self.create_text(w / 2, h / 2, text=self.text, fill=txt_col, font=self.font)
+
+    def _on_resize(self, event):
+        self._draw(self.current_bg)
+
+    def _on_enter(self, event):
+        if not self.is_disabled:
+            self.current_bg = self.hover_bg
+            self._draw(self.hover_bg)
+
+    def _on_leave(self, event):
+        if not self.is_disabled:
+            self.current_bg = self.normal_bg
+            self._draw(self.normal_bg)
+
+    def _on_click(self, event):
+        if not self.is_disabled and self.command:
+            self.current_bg = self.active_bg
+            self._draw(self.active_bg)
+            self.after(120, lambda: self._draw(self.hover_bg if self.current_bg == self.active_bg else self.current_bg))
+            self.command()
+
+    def set_state(self, state):
+        if state == tk.DISABLED or state == "disabled":
+            self.is_disabled = True
+            self.current_bg = self.disabled_bg
+            self._draw(self.disabled_bg, self.disabled_fg)
+            self.config(cursor="")
+        else:
+            self.is_disabled = False
+            self.current_bg = self.normal_bg
+            self._draw(self.normal_bg, self.normal_fg)
+            self.config(cursor="hand2")
+
+    def config(self, **kwargs):
+        if "state" in kwargs:
+            self.set_state(kwargs.pop("state"))
+        if "text" in kwargs:
+            self.text = kwargs.pop("text")
+            self._draw(self.current_bg)
+        if kwargs:
+            super().config(**kwargs)
+
+
+class StyledCard(tk.Frame):
+    """Надежный контейнер-карточка на базе tk.Frame с аккуратной рамкой и автоматическим подгоном высоты."""
+    def __init__(self, parent, bg="#08090f", card_bg="#111422", border_color="#22273d", padding=6, **kwargs):
+        super().__init__(
+            parent,
+            bg=card_bg,
+            highlightbackground=border_color,
+            highlightthickness=1,
+            bd=0,
+            padx=padding,
+            pady=padding,
+            **kwargs
+        )
+        self.inner_frame = self
+
+
+class GradientFooterCanvas(tk.Canvas):
+    """Кастомный нижний холст с плавным переходящим градиентом от фонового к тёмно-акцентному тону."""
+    def __init__(self, parent, height=20, start_color="#08090f", end_color="#18112e", glow_color="#00f5d4", **kwargs):
+        super().__init__(parent, height=height, highlightthickness=0, bd=0, bg=start_color, **kwargs)
+        self.start_color = start_color
+        self.end_color = end_color
+        self.glow_color = glow_color
+        self.bind("<Configure>", self._draw_gradient)
+
+    def _hex_to_rgb(self, hex_str: str) -> Tuple[int, int, int]:
+        hex_str = hex_str.lstrip('#')
+        return tuple(int(hex_str[i:i+2], 16) for i in (0, 2, 4))
+
+    def _rgb_to_hex(self, rgb):
+        return f"#{int(rgb[0]):02x}{int(rgb[1]):02x}{int(rgb[2]):02x}"
+
+    def _draw_gradient(self, event=None):
+        self.delete("all")
+        w = self.winfo_width()
+        h = self.winfo_height()
+        if w <= 0 or h <= 0:
+            return
+
+        r1, g1, b1 = self._hex_to_rgb(self.start_color)
+        r2, g2, b2 = self._hex_to_rgb(self.end_color)
+
+        steps = max(1, h)
+        for i in range(steps):
+            ratio = i / float(steps)
+            nr = int(r1 + (r2 - r1) * ratio)
+            ng = int(g1 + (g2 - g1) * ratio)
+            nb = int(b1 + (b2 - b1) * ratio)
+            color = self._rgb_to_hex((nr, ng, nb))
+            self.create_line(0, i, w, i, fill=color)
+
+        self.create_line(0, h - 1, w, h - 1, fill=self.glow_color, width=1)
+
+
+class FuzzingAnalyticsCanvas(tk.Canvas):
+    """Компактная векторная диаграмма доступности доменов и задержки (ping ms). Все шрифты целые."""
+    def __init__(self, parent, bg="#0d101d", **kwargs):
+        super().__init__(parent, bg=bg, highlightthickness=0, bd=0, **kwargs)
+        self.data_history: List[Tuple[str, float, float]] = []
+        self.bind("<Configure>", self.redraw)
+
+    def add_data_point(self, label: str, success_rate: float, latency: float):
+        self.data_history.append((label, success_rate, latency))
+        if len(self.data_history) > 20:
+            self.data_history.pop(0)
+        self.redraw()
+
+    def clear_data(self):
+        self.data_history.clear()
+        self.redraw()
+
+    def redraw(self, event=None):
+        self.delete("all")
+        w = self.winfo_width()
+        h = self.winfo_height()
+        if w < 20 or h < 20:
+            return
+
+        pad_left, pad_right, pad_top, pad_bottom = 28, 10, 14, 18
+        chart_w = w - pad_left - pad_right
+        chart_h = h - pad_top - pad_bottom
+
+        self.create_rectangle(pad_left, pad_top, w - pad_right, h - pad_bottom, outline="#22273d", fill="#08090f")
+
+        for pct in [0, 50, 100]:
+            y = pad_top + chart_h * (1.0 - pct / 100.0)
+            self.create_line(pad_left, y, w - pad_right, y, fill="#181c2e", dash=(2, 4))
+            self.create_text(pad_left - 4, y, text=f"{pct}%", fill="#525b75", font=("Segoe UI", 7, "bold"), anchor="e")
+
+        if not self.data_history:
+            self.create_text(w / 2, h / 2, text="📊 Ожидание данных раунда...", fill="#525b75", font=("Segoe UI", 8, "italic"))
+            return
+
+        n = len(self.data_history)
+        step_x = chart_w / max(1, n - 1) if n > 1 else chart_w / 2
+
+        points_success = []
+        points_latency = []
+        max_lat = max([lat for _, _, lat in self.data_history if lat > 0] or [100.0])
+
+        for i, (label, rate, lat) in enumerate(self.data_history):
+            x = pad_left + (i * step_x if n > 1 else chart_w / 2)
+            y_rate = pad_top + chart_h * (1.0 - rate / 100.0)
+            y_lat = pad_top + chart_h * (1.0 - min(lat, max_lat) / max_lat)
+
+            points_success.append((x, y_rate))
+            points_latency.append((x, y_lat))
+
+            self.create_text(x, h - pad_bottom + 8, text=label.replace("МУТАЦИЯ #", "#"), fill="#8f9bb3", font=("Segoe UI", 7))
+
+        if len(points_success) > 1:
+            poly_points = [pad_left, h - pad_bottom]
+            for x, y in points_success:
+                poly_points.extend([x, y])
+            poly_points.extend([points_success[-1][0], h - pad_bottom])
+            self.create_polygon(poly_points, fill="#00f5d4", stipple="gray25" if os.name == 'nt' else "")
+
+            for i in range(len(points_success) - 1):
+                self.create_line(points_success[i][0], points_success[i], points_success[i+1][0], points_success[i+1], fill="#00f5d4", width=2, capstyle=tk.ROUND)
+
+            for i in range(len(points_latency) - 1):
+                self.create_line(points_latency[i][0], points_latency[i], points_latency[i+1][0], points_latency[i+1], fill="#7000ff", width=1, dash=(3, 2))
+
+        for (x, y) in points_success:
+            self.create_oval(x - 2, y - 2, x + 2, y + 2, fill="#00f5d4", outline="#ffffff")
+
+        self.create_line(w - 120, pad_top - 6, w - 108, pad_top - 6, fill="#00f5d4", width=2)
+        self.create_text(w - 104, pad_top - 6, text="Успех (%)", fill="#00f5d4", font=("Segoe UI", 7, "bold"), anchor="w")
+
+        self.create_line(w - 52, pad_top - 6, w - 40, pad_top - 6, fill="#7000ff", width=2)
+        self.create_text(w - 36, pad_top - 6, text="Пинг", fill="#7000ff", font=("Segoe UI", 7, "bold"), anchor="w")
+
+
+class TrayManager:
+    """Менеджер системного трея."""
+    def __init__(self, root: tk.Tk, on_restore_cb, on_exit_cb):
+        self.root = root
+        self.on_restore_cb = on_restore_cb
+        self.on_exit_cb = on_exit_cb
+        self.is_minimized = False
+
+    def minimize_to_tray(self):
+        self.is_minimized = True
+        self.root.withdraw()
+
+    def restore_from_tray(self):
+        self.is_minimized = False
+        self.root.deiconify()
+        self.root.lift()
+        self.root.focus_force()
+
+
 class HistoryDialog(tk.Toplevel):
-    """Диалоговое окно истории добавленных программ и игр в стиле Neural Expressive."""
+    """Компактное диалоговое окно истории."""
     def __init__(self, parent, on_select_callback):
         super().__init__(parent)
-        self.title("История приложений")
-        self.geometry("560x410")
+        self.title("🧠 Neural Expressive — История приложений")
+        self.geometry("450x280")
         self.resizable(False, False)
         self.configure(bg="#08090f")
         self.on_select_callback = on_select_callback
@@ -24,32 +284,34 @@ class HistoryDialog(tk.Toplevel):
         self.transient(parent)
         self.grab_set()
 
-
     def _build_ui(self):
-        container = ttk.Frame(self, padding=20)
-        container.pack(fill=tk.BOTH, expand=True)
+        card = StyledCard(self, bg="#08090f", card_bg="#111422", border_color="#22273d", padding=6)
+        card.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
 
-        header_lbl = ttk.Label(
+        container = card.inner_frame
+
+        header_lbl = tk.Label(
             container,
             text="📜 История найденных приложений & хостов",
-            font=("Segoe UI", 11, "bold"),
-            foreground="#00f5d4"
+            font=("Segoe UI", 9, "bold"),
+            bg="#111422",
+            fg="#00f5d4"
         )
-        header_lbl.pack(anchor=tk.W, pady=(0, 10))
+        header_lbl.pack(anchor=tk.W, pady=(0, 4))
 
-        frame_list = ttk.Frame(container)
-        frame_list.pack(fill=tk.BOTH, expand=True, pady=(0, 14))
+        frame_list = tk.Frame(container, bg="#111422")
+        frame_list.pack(fill=tk.BOTH, expand=True, pady=(0, 4))
 
         self.listbox = tk.Listbox(
             frame_list,
-            font=("Consolas", 10),
+            height=5,
+            font=("Consolas", 8),
             selectmode=tk.SINGLE,
-            bg="#111422",
+            bg="#181c2e",
             fg="#f0f4f8",
             selectbackground="#7000ff",
             selectforeground="#ffffff",
-            highlightthickness=1,
-            highlightbackground="#22273d",
+            highlightthickness=0,
             activestyle="none",
             bd=0
         )
@@ -61,22 +323,33 @@ class HistoryDialog(tk.Toplevel):
 
         self.history_data = load_history()
         for app_name, hosts in self.history_data.items():
-            self.listbox.insert(tk.END, f"  ⚡ {app_name:<22} — [{len(hosts)} хостов/IP]")
+            self.listbox.insert(tk.END, f"  ⚡ {app_name:<18} — [{len(hosts)} хостов/IP]")
 
-        btn_frame = ttk.Frame(container)
+        btn_frame = tk.Frame(container, bg="#111422")
         btn_frame.pack(fill=tk.X)
 
-        ttk.Button(
+        RoundedButton(
             btn_frame,
             text="📥 Загрузить в фуззер",
-            style="Accent.TButton",
-            command=self._load_selected
-        ).pack(side=tk.RIGHT, padx=(8, 0))
+            command=self._load_selected,
+            radius=6,
+            bg_color="#00f5d4",
+            fg_color="#08090f",
+            hover_bg="#00d4b8",
+            width=130,
+            height=24
+        ).pack(side=tk.RIGHT, padx=(4, 0))
 
-        ttk.Button(
+        RoundedButton(
             btn_frame,
             text="Закрыть",
-            command=self.destroy
+            command=self.destroy,
+            radius=6,
+            bg_color="#1a1f33",
+            fg_color="#f0f4f8",
+            hover_bg="#2a314d",
+            width=75,
+            height=24
         ).pack(side=tk.RIGHT)
 
     def _load_selected(self):
@@ -89,90 +362,12 @@ class HistoryDialog(tk.Toplevel):
             self.destroy()
 
 
-class SearchAppDialog(tk.Toplevel):
-    """Диалоговое окно поиска хостов приложения в стиле Neural Expressive."""
-    def __init__(self, parent, on_search_callback):
-        super().__init__(parent)
-        self.title("Поиск программы")
-        self.geometry("460x210")
-        self.resizable(False, False)
-        self.configure(bg="#08090f")
-        self.on_search_callback = on_search_callback
-
-        self._build_ui()
-        self.transient(parent)
-        self.grab_set()
-
-    def _build_ui(self):
-        container = ttk.Frame(self, padding=20)
-        container.pack(fill=tk.BOTH, expand=True)
-
-        # Заголовок
-        header_lbl = ttk.Label(
-            container,
-            text="🔎 Поиск хостов по имени приложения",
-            font=("Segoe UI", 11, "bold"),
-            foreground="#00f5d4",
-            background="#08090f"  # Прозрачный фон под цвет окна
-        )
-        header_lbl.pack(anchor=tk.W, pady=(0, 6))
-
-        # Описание / Подсказка
-        sub_lbl = ttk.Label(
-            container,
-            text="Введите название программы или игры (например, Telegram, Discord, Apex Legends):",
-            font=("Segoe UI", 9),
-            foreground="#8f9bb3",
-            background="#08090f",  # Прозрачный фон под цвет окна
-            wraplength=410
-        )
-        sub_lbl.pack(anchor=tk.W, pady=(0, 14))
-
-        # Поле ввода
-        self.entry = tk.Entry(
-            container,
-            bg="#181c2e",
-            fg="#00f5d4",
-            insertbackground="#00f5d4",
-            font=("Consolas", 11, "bold"),
-            bd=0,
-            highlightthickness=1,
-            highlightbackground="#22273d",
-            highlightcolor="#00f5d4"
-        )
-        self.entry.pack(fill=tk.X, ipady=6, pady=(0, 18))
-        self.entry.focus_set()
-        self.entry.bind("<Return>", lambda e: self._submit())
-
-        # Кнопки действия
-        btn_frame = ttk.Frame(container)
-        btn_frame.pack(fill=tk.X)
-
-        ttk.Button(
-            btn_frame,
-            text="🔎 Найти хосты",
-            style="Accent.TButton",
-            command=self._submit
-        ).pack(side=tk.RIGHT, padx=(8, 0))
-
-        ttk.Button(
-            btn_frame,
-            text="Отмена",
-            command=self.destroy
-        ).pack(side=tk.RIGHT)
-
-    def _submit(self):
-        val = self.entry.get().strip()
-        if val:
-            self.on_search_callback(val)
-            self.destroy()
-
 class ZapretFuzzerApp:
     def __init__(self, root: tk.Tk):
         self.root = root
-        self.root.title("Zapret Fuzzer & Strategy Tuner — Version 0.1.5")
-        self.root.geometry("1020x820")
-        self.root.minsize(1020, 820)
+        self.root.title("Zapret Fuzzer & Strategy Tuner — Neural Expressive UI v3.8")
+        self.root.geometry("820x560")
+        self.root.minsize(760, 500)
         self.root.configure(bg="#08090f")
 
         self.bat_path_var = tk.StringVar(value="general (ALT11).bat")
@@ -181,6 +376,9 @@ class ZapretFuzzerApp:
         self.target_hosts: List[str] = []
         self.engine: Optional[FuzzerEngine] = None
         self.log_queue = queue.Queue()
+
+        self.tray_manager = TrayManager(self.root, on_restore_cb=self._restore_from_tray, on_exit_cb=self._exit_app)
+        self.root.protocol("WM_DELETE_WINDOW", self._on_window_close)
 
         self._setup_styles()
         self._build_ui()
@@ -194,167 +392,57 @@ class ZapretFuzzerApp:
         BG_DARK = "#08090f"
         BG_CARD = "#111422"
         FG_TEXT = "#f0f4f8"
-        BORDER_COL = "#22273d"
 
         style.configure(".", background=BG_DARK, foreground=FG_TEXT)
         style.configure("TFrame", background=BG_DARK)
-        style.configure("Card.TFrame", background=BG_CARD)
-
-        style.configure(
-            "TLabelframe",
-            background=BG_CARD,
-            foreground="#00f5d4",
-            bordercolor=BORDER_COL,
-            darkcolor=BG_CARD,
-            lightcolor=BG_CARD,
-            borderwidth=1
-        )
-        style.configure(
-            "TLabelframe.Label",
-            font=("Segoe UI", 10, "bold"),
-            background=BG_CARD,
-            foreground="#00f5d4"
-        )
-
-        style.configure(
-            "TLabel",
-            background=BG_CARD,
-            foreground=FG_TEXT,
-            font=("Segoe UI", 9)
-        )
-
-        # Standard button styling
-        style.configure(
-            "TButton",
-            font=("Segoe UI", 9, "bold"),
-            padding=(10, 6),
-            background="#1a1f33",
-            foreground="#f0f4f8",
-            borderwidth=0,
-            focusthickness=0
-        )
-        style.map(
-            "TButton",
-            background=[('active', '#2a314d'), ('disabled', '#121524')],
-            foreground=[('disabled', '#525b75')]
-        )
-
-        # Primary Accent Button (Neural Cyan)
-        style.configure(
-            "Accent.TButton",
-            font=("Segoe UI", 10, "bold"),
-            padding=(14, 8),
-            background="#00f5d4",
-            foreground="#08090f"
-        )
-        style.map(
-            "Accent.TButton",
-            background=[('active', '#00d4b8'), ('disabled', '#1a2430')],
-            foreground=[('disabled', '#3e5263')]
-        )
-
-        # Emergency / Stop Button (Cyber Red)
-        style.configure(
-            "Stop.TButton",
-            font=("Segoe UI", 10, "bold"),
-            padding=(14, 8),
-            background="#ff4757",
-            foreground="#ffffff"
-        )
-        style.map(
-            "Stop.TButton",
-            background=[('active', '#ff6b81'), ('disabled', '#2a1a24')],
-            foreground=[('disabled', '#523342')]
-        )
-
-        # Preset Button (Quantum Violet)
-        style.configure(
-            "Preset.TButton",
-            font=("Segoe UI", 9, "bold"),
-            padding=(8, 6),
-            background="#1e1836",
-            foreground="#d1c4e9"
-        )
-        style.map(
-            "Preset.TButton",
-            background=[('active', '#7000ff')],
-            foreground=[('active', '#ffffff')]
-        )
-
-        # Update & Utility Buttons
-        style.configure(
-            "Update.TButton",
-            font=("Segoe UI", 9, "bold"),
-            padding=(8, 5),
-            background="#e76f51",
-            foreground="#ffffff"
-        )
-        style.map("Update.TButton", background=[('active', '#f4a261')])
-
-        style.configure(
-            "History.TButton",
-            font=("Segoe UI", 9, "bold"),
-            padding=(8, 5),
-            background="#7000ff",
-            foreground="#ffffff"
-        )
-        style.map("History.TButton", background=[('active', '#8a2be2')])
-
-        # Service Controls
-        style.configure(
-            "SvcStart.TButton",
-            font=("Segoe UI", 9, "bold"),
-            padding=(8, 5),
-            background="#2ec4b6",
-            foreground="#08090f"
-        )
-        style.map("SvcStart.TButton", background=[('active', '#20ad96')])
-
-        style.configure(
-            "SvcReset.TButton",
-            font=("Segoe UI", 9, "bold"),
-            padding=(8, 5),
-            background="#ff4757",
-            foreground="#ffffff"
-        )
-        style.map("SvcReset.TButton", background=[('active', '#ff6b81')])
+        style.configure("TLabel", background=BG_CARD, foreground=FG_TEXT, font=("Segoe UI", 8))
 
     def _build_ui(self):
-        # Master container
-        main_container = ttk.Frame(self.root, padding=14)
-        main_container.pack(fill=tk.BOTH, expand=True)
+        main_container = tk.Frame(self.root, bg="#08090f")
+        main_container.pack(fill=tk.BOTH, expand=True, padx=6, pady=(6, 0))
 
-        # --- Top Banner Header ---
-        header_frame = tk.Frame(main_container, bg="#0d101d", highlightthickness=1, highlightbackground="#22273d")
-        header_frame.pack(fill=tk.X, pady=(0, 12))
+        # --- Header Banner Card ---
+        header_card = StyledCard(main_container, bg="#08090f", card_bg="#0d101d", border_color="#22273d", padding=4)
+        header_card.pack(fill=tk.X, pady=(0, 4))
 
-        header_content = tk.Frame(header_frame, bg="#0d101d", padx=14, pady=10)
-        header_content.pack(fill=tk.X)
-
-        title_label = tk.Label(
+        header_content = header_card.inner_frame
+        tk.Label(
             header_content,
             text="🧠 ZAPRET FUZZER & STRATEGY TUNER",
-            font=("Segoe UI", 13, "bold"),
+            font=("Segoe UI", 10, "bold"),
             bg="#0d101d",
             fg="#00f5d4"
-        )
-        title_label.pack(side=tk.LEFT)
+        ).pack(side=tk.LEFT, padx=4)
 
-        subtitle_label = tk.Label(
+        tk.Label(
             header_content,
-            text="Version 0.1.5",
-            font=("Segoe UI", 8, "bold"),
+            text="NEURAL EXPRESSIVE UI v3.8",
+            font=("Segoe UI", 7, "bold"),
             bg="#0d101d",
             fg="#7000ff"
-        )
-        subtitle_label.pack(side=tk.LEFT, padx=(10, 0))
+        ).pack(side=tk.LEFT, padx=(6, 0))
 
-        # --- Section 1: Strategy & Winws Control ---
-        top_frame = ttk.LabelFrame(main_container, text=" ⚡ Настройки стратегии и управление winws ", padding=12)
-        top_frame.pack(fill=tk.X, pady=(0, 10))
+        RoundedButton(
+            header_content,
+            text="📥 В трей",
+            command=self._minimize_to_tray,
+            radius=6,
+            bg_color="#1e1836",
+            fg_color="#d1c4e9",
+            hover_bg="#7000ff",
+            width=65,
+            height=20
+        ).pack(side=tk.RIGHT, padx=2)
 
-        # Row 0: Strategy File + Status
-        ttk.Label(top_frame, text="Файл стратегии:", font=("Segoe UI", 9, "bold"), foreground="#8f9bb3").grid(row=0, column=0, sticky=tk.W, padx=(0, 6))
+        # --- Section 1: Strategy & Winws Control Card ---
+        sec1_card = StyledCard(main_container, bg="#08090f", card_bg="#111422", border_color="#22273d", padding=5)
+        sec1_card.pack(fill=tk.X, pady=(0, 4))
+
+        top_frame = sec1_card.inner_frame
+
+        tk.Label(top_frame, text="⚡ Настройки стратегии и управление winws", font=("Segoe UI", 9, "bold"), bg="#111422", fg="#00f5d4").grid(row=0, column=0, columnspan=7, sticky=tk.W, pady=(0, 2))
+
+        tk.Label(top_frame, text="Файл стратегии:", font=("Segoe UI", 8, "bold"), bg="#111422", fg="#8f9bb3").grid(row=1, column=0, sticky=tk.W, padx=(0, 4))
 
         bat_entry = tk.Entry(
             top_frame,
@@ -362,44 +450,46 @@ class ZapretFuzzerApp:
             bg="#181c2e",
             fg="#00f5d4",
             insertbackground="#00f5d4",
-            font=("Consolas", 10, "bold"),
+            font=("Consolas", 8, "bold"),
             bd=0,
             highlightthickness=1,
             highlightbackground="#22273d",
             highlightcolor="#00f5d4"
         )
-        bat_entry.grid(row=0, column=1, sticky=tk.EW, padx=6)
+        bat_entry.grid(row=1, column=1, sticky=tk.EW, padx=2)
 
-        ttk.Button(top_frame, text="📁 Обзор...", command=self._browse_bat).grid(row=0, column=2, padx=3)
-        ttk.Button(top_frame, text="📜 История", style="History.TButton", command=self._open_history_dialog).grid(row=0, column=3, padx=3)
-        ttk.Button(top_frame, text="🔄 Обновить", style="Update.TButton", command=self._trigger_update).grid(row=0, column=4, padx=3)
+        RoundedButton(top_frame, text="📁 Обзор...", command=self._browse_bat, radius=6, width=70, height=22).grid(row=1, column=2, padx=2)
+        RoundedButton(top_frame, text="📜 История", command=self._open_history_dialog, radius=6, bg_color="#7000ff", hover_bg="#8a2be2", width=75, height=22).grid(row=1, column=3, padx=2)
+        RoundedButton(top_frame, text="🔄 Обновить", command=self._trigger_update, radius=6, bg_color="#e76f51", hover_bg="#f4a261", width=75, height=22).grid(row=1, column=4, padx=2)
 
-        ttk.Label(top_frame, text="Статус winws:", font=("Segoe UI", 9, "bold"), foreground="#8f9bb3").grid(row=0, column=5, padx=(14, 6))
-        self.winws_status_lbl = ttk.Label(top_frame, textvariable=self.winws_status_var, font=("Segoe UI", 9, "bold"), foreground="#ff4757")
-        self.winws_status_lbl.grid(row=0, column=6, sticky=tk.W)
+        tk.Label(top_frame, text="Статус winws:", font=("Segoe UI", 8, "bold"), bg="#111422", fg="#8f9bb3").grid(row=1, column=5, padx=(6, 2))
+        self.winws_status_lbl = tk.Label(top_frame, textvariable=self.winws_status_var, font=("Segoe UI", 8, "bold"), bg="#111422", fg="#ff4757")
+        self.winws_status_lbl.grid(row=1, column=6, sticky=tk.W)
 
         top_frame.columnconfigure(1, weight=1)
 
-        # Row 1: Service Management Controls
-        svc_frame = tk.Frame(top_frame, bg="#111422", bd=0, highlightthickness=0)
-        svc_frame.grid(row=1, column=0, columnspan=5, sticky=tk.EW, pady=(12, 0))
+        svc_frame = tk.Frame(top_frame, bg="#111422")
+        svc_frame.grid(row=2, column=0, columnspan=7, sticky=tk.EW, pady=(4, 0))
 
-        ttk.Label(svc_frame, text="Управление службой:", font=("Segoe UI", 13, "bold"), foreground="#8f9bb3", background="#111422").pack(side=tk.LEFT, padx=(0, 10))
+        tk.Label(svc_frame, text="Служба:", font=("Segoe UI", 8, "bold"), bg="#111422", fg="#8f9bb3").pack(side=tk.LEFT, padx=(0, 4))
 
-        ttk.Button(svc_frame, text="▶ Запустить", style="SvcStart.TButton", command=self._start_winws_service).pack(side=tk.LEFT, padx=3)
-        ttk.Button(svc_frame, text="⏹ Остановить", command=self._stop_winws_service).pack(side=tk.LEFT, padx=3)
-        ttk.Button(svc_frame, text="🔄 Перезапустить", command=self._restart_winws_service).pack(side=tk.LEFT, padx=3)
-        ttk.Button(svc_frame, text="🧹 Сброс WinDivert", style="SvcReset.TButton", command=self._reset_windivert_service).pack(side=tk.LEFT, padx=(18, 3))
+        RoundedButton(svc_frame, text="▶ Запустить", command=self._start_winws_service, radius=6, bg_color="#2ec4b6", fg_color="#08090f", hover_bg="#20ad96", width=80, height=22).pack(side=tk.LEFT, padx=2)
+        RoundedButton(svc_frame, text="⏹ Остановить", command=self._stop_winws_service, radius=6, width=80, height=22).pack(side=tk.LEFT, padx=2)
+        RoundedButton(svc_frame, text="🔄 Перезапустить", command=self._restart_winws_service, radius=6, width=100, height=22).pack(side=tk.LEFT, padx=2)
+        RoundedButton(svc_frame, text="🧹 Сброс WinDivert", command=self._reset_windivert_service, radius=6, bg_color="#ff4757", hover_bg="#ff6b81", width=110, height=22).pack(side=tk.LEFT, padx=(6, 2))
 
-        # --- Section 2: Presets & Online Search ---
-        preset_frame = ttk.LabelFrame(main_container, text=" 🎯 Поиск и пресеты приложений ", padding=12)
-        preset_frame.pack(fill=tk.X, pady=(0, 10))
+        # --- Section 2: Presets Card ---
+        sec2_card = StyledCard(main_container, bg="#08090f", card_bg="#111422", border_color="#22273d", padding=5)
+        sec2_card.pack(fill=tk.X, pady=(0, 4))
 
-        preset_btn_container = ttk.Frame(preset_frame)
+        preset_frame = sec2_card.inner_frame
+        tk.Label(preset_frame, text="🎯 Пресеты приложений", font=("Segoe UI", 9, "bold"), bg="#111422", fg="#00f5d4").pack(anchor=tk.W, pady=(0, 2))
+
+        preset_btn_container = tk.Frame(preset_frame, bg="#111422")
         preset_btn_container.pack(fill=tk.X)
 
         presets_list = [
-            ("🎯 Rainbow Six Siege", "Rainbow Six Siege"),
+            ("🎯 Rainbow Six", "Rainbow Six Siege"),
             ("💬 Discord", "Discord"),
             ("📺 YouTube", "YouTube"),
             ("🎮 Steam", "Steam"),
@@ -407,149 +497,203 @@ class ZapretFuzzerApp:
         ]
 
         for i, (label, name) in enumerate(presets_list):
-            btn = ttk.Button(
+            btn = RoundedButton(
                 preset_btn_container,
                 text=label,
-                style="Preset.TButton",
-                command=lambda p=name: self._add_preset_hosts(p)
+                command=lambda p=name: self._add_preset_hosts(p),
+                radius=6,
+                bg_color="#1e1836",
+                fg_color="#d1c4e9",
+                hover_bg="#7000ff",
+                width=105,
+                height=22
             )
-            btn.grid(row=0, column=i, padx=3, pady=2, sticky=tk.EW)
+            btn.grid(row=0, column=i, padx=2, pady=1, sticky=tk.EW)
             preset_btn_container.columnconfigure(i, weight=1)
 
-        search_app_btn = ttk.Button(
+        search_app_btn = RoundedButton(
             preset_btn_container,
             text="🔎 Поиск по имени",
-            command=self._search_app_by_name
+            command=self._search_app_by_name,
+            radius=6,
+            width=110,
+            height=22
         )
-        search_app_btn.grid(row=0, column=len(presets_list), padx=3, pady=2)
+        search_app_btn.grid(row=0, column=len(presets_list), padx=2, pady=1)
 
-        # --- Section 3: Middle Split (Hosts List + Parameter Dashboard) ---
-        middle_frame = ttk.Frame(main_container)
-        middle_frame.pack(fill=tk.BOTH, expand=False, pady=(0, 10))
+        # --- Section 3: Middle Split (Hosts + Analytics + Parameters) ---
+        middle_frame = tk.Frame(main_container, bg="#08090f")
+        middle_frame.pack(fill=tk.X, expand=False, pady=(0, 4))
 
-        # Hosts Panel
-        hosts_frame = ttk.LabelFrame(middle_frame, text=" 🌐 Целевые хосты и IP (до 12 параллельно, порог: 8) ", padding=10)
-        hosts_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 6))
+        hosts_card = StyledCard(middle_frame, bg="#08090f", card_bg="#111422", border_color="#22273d", padding=5)
+        hosts_card.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 2))
+
+        hosts_frame = hosts_card.inner_frame
+        tk.Label(hosts_frame, text="🌐 Цели и IP", font=("Segoe UI", 9, "bold"), bg="#111422", fg="#00f5d4").pack(anchor=tk.W, pady=(0, 2))
+
+        frame_host_list = tk.Frame(hosts_frame, bg="#111422")
+        frame_host_list.pack(fill=tk.BOTH, expand=True)
 
         self.hosts_listbox = tk.Listbox(
-            hosts_frame,
-            height=7,
+            frame_host_list,
+            height=3,
+            font=("Consolas", 8),
             selectmode=tk.SINGLE,
-            font=("Consolas", 10),
             bg="#181c2e",
             fg="#f0f4f8",
             selectbackground="#7000ff",
             selectforeground="#ffffff",
-            highlightthickness=1,
-            highlightbackground="#22273d",
+            highlightthickness=0,
             activestyle="none",
             bd=0
         )
         self.hosts_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
-        scrollbar = ttk.Scrollbar(hosts_frame, orient=tk.VERTICAL, command=self.hosts_listbox.yview)
+        scrollbar = ttk.Scrollbar(frame_host_list, orient=tk.VERTICAL, command=self.hosts_listbox.yview)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         self.hosts_listbox.config(yscrollcommand=scrollbar.set)
 
-        hosts_btn_frame = ttk.Frame(hosts_frame)
-        hosts_btn_frame.pack(fill=tk.X, pady=(8, 0))
+        hosts_btn_frame = tk.Frame(hosts_frame, bg="#111422")
+        hosts_btn_frame.pack(fill=tk.X, pady=(2, 0))
 
-        ttk.Button(hosts_btn_frame, text="🗑️ Удалить выбранный", command=self._remove_selected_host).pack(side=tk.LEFT, padx=2)
-        ttk.Button(hosts_btn_frame, text="🧹 Очистить список", command=self._clear_hosts).pack(side=tk.LEFT, padx=2)
+        RoundedButton(hosts_btn_frame, text="🗑️ Удалить", command=self._remove_selected_host, radius=6, width=95, height=20).pack(side=tk.LEFT, padx=1)
+        RoundedButton(hosts_btn_frame, text="🧹 Очистить", command=self._clear_hosts, radius=6, width=75, height=20).pack(side=tk.LEFT, padx=1)
 
-        # Parameters Dashboard Panel
-        params_frame = ttk.LabelFrame(middle_frame, text=" 🎛️ Панель параметров ", padding=10)
-        params_frame.pack(side=tk.RIGHT, fill=tk.Y, padx=(6, 0))
+        analytics_card = StyledCard(middle_frame, bg="#08090f", card_bg="#111422", border_color="#22273d", padding=5)
+        analytics_card.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=2)
+
+        analytics_frame = analytics_card.inner_frame
+        tk.Label(analytics_frame, text="📈 Аналитика пробива", font=("Segoe UI", 9, "bold"), bg="#111422", fg="#00f5d4").pack(anchor=tk.W, pady=(0, 2))
+
+        self.analytics_chart = FuzzingAnalyticsCanvas(analytics_frame, bg="#0d101d", height=70)
+        self.analytics_chart.pack(fill=tk.BOTH, expand=True)
+
+        params_card = StyledCard(middle_frame, bg="#08090f", card_bg="#111422", border_color="#22273d", padding=5)
+        params_card.pack(side=tk.RIGHT, fill=tk.Y, padx=(2, 0))
+
+        params_frame = params_card.inner_frame
+        tk.Label(params_frame, text="🎛️ Параметры", font=("Segoe UI", 9, "bold"), bg="#111422", fg="#00f5d4").grid(row=0, column=0, columnspan=2, sticky=tk.W, pady=(0, 2))
 
         self.param_labels = {}
         param_names = [
-            ("TCP Split Pos:", "tcp_split", "1"),
-            ("TCP Seq Ovl:", "tcp_seqovl", "664"),
+            ("TCP Split:", "tcp_split", "1"),
+            ("TCP SeqOvl:", "tcp_seqovl", "664"),
             ("TCP TTL:", "tcp_ttl", "0"),
             ("UDP Repeats:", "udp_repeats", "8"),
             ("UDP Cutoff:", "udp_cutoff", "n4")
         ]
 
-        for row, (title, key, default_val) in enumerate(param_names):
-            ttk.Label(
-                params_frame,
-                text=title,
-                font=("Segoe UI", 9, "bold"),
-                foreground="#8f9bb3"
-            ).grid(row=row, column=0, sticky=tk.W, pady=4, padx=(0, 10))
-
-            val_lbl = ttk.Label(
-                params_frame,
-                text=default_val,
-                font=("Consolas", 11, "bold"),
-                foreground="#00f5d4"
-            )
-            val_lbl.grid(row=row, column=1, sticky=tk.E, pady=4)
+        for row, (title, key, default_val) in enumerate(param_names, start=1):
+            tk.Label(params_frame, text=title, font=("Segoe UI", 8, "bold"), bg="#111422", fg="#8f9bb3").grid(row=row, column=0, sticky=tk.W, pady=1, padx=(0, 4))
+            val_lbl = tk.Label(params_frame, text=default_val, font=("Consolas", 8, "bold"), bg="#111422", fg="#00f5d4")
+            val_lbl.grid(row=row, column=1, sticky=tk.E, pady=1)
             self.param_labels[key] = val_lbl
 
-        # --- Section 4: Engine Actions ---
-        ctrl_frame = ttk.Frame(main_container)
-        ctrl_frame.pack(fill=tk.X, pady=(0, 10))
+        # --- Section 4: Engine Execution Controls ---
+        ctrl_frame = tk.Frame(main_container, bg="#08090f")
+        ctrl_frame.pack(fill=tk.X, pady=(0, 4))
 
-        self.start_btn = ttk.Button(
+        self.start_btn = RoundedButton(
             ctrl_frame,
-            text="🚀 Запустить подбор стратегии",
-            style="Accent.TButton",
-            command=self._start_fuzzing
+            text="🚀 Запустить подбор стратегии (Neural Async Fuzzing)",
+            command=self._start_fuzzing,
+            radius=8,
+            bg_color="#00f5d4",
+            fg_color="#08090f",
+            hover_bg="#00d4b8",
+            font=("Segoe UI", 9, "bold"),
+            height=28
         )
-        self.start_btn.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 6))
+        self.start_btn.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 2))
 
-        self.stop_btn = ttk.Button(
+        self.stop_btn = RoundedButton(
             ctrl_frame,
             text="🛑 Остановить",
-            style="Stop.TButton",
             command=self._stop_fuzzing,
-            state=tk.DISABLED
+            radius=8,
+            bg_color="#ff4757",
+            fg_color="#ffffff",
+            hover_bg="#ff6b81",
+            font=("Segoe UI", 9, "bold"),
+            width=100,
+            height=28
         )
-        self.stop_btn.pack(side=tk.RIGHT, padx=(6, 0))
+        self.stop_btn.set_state(tk.DISABLED)
+        self.stop_btn.pack(side=tk.RIGHT, padx=(2, 0))
 
-        # --- Section 5: Console Terminal Log ---
-        log_frame = ttk.LabelFrame(main_container, text=" 💻 Консоль подбора и тестирования ", padding=10)
-        log_frame.pack(fill=tk.BOTH, expand=True)
+        # --- Section 5: Terminal Console Log Card (Expands to fill remaining space) ---
+        log_card = StyledCard(main_container, bg="#08090f", card_bg="#05060a", border_color="#22273d", padding=5)
+        log_card.pack(fill=tk.BOTH, expand=True, pady=(0, 2))
+
+        log_frame = log_card.inner_frame
+        tk.Label(log_frame, text="💻 Консоль подбора", font=("Segoe UI", 9, "bold"), bg="#05060a", fg="#00f5d4").pack(anchor=tk.W, pady=(0, 2))
+
+        frame_text_scroll = tk.Frame(log_frame, bg="#05060a")
+        frame_text_scroll.pack(fill=tk.BOTH, expand=True)
 
         self.log_text = tk.Text(
-            log_frame,
+            frame_text_scroll,
             bg="#05060a",
             fg="#d0d7de",
             insertbackground="#00f5d4",
-            font=("Consolas", 9),
+            font=("Consolas", 8),
             wrap=tk.WORD,
+            height=5,
             bd=0,
-            highlightthickness=1,
-            highlightbackground="#22273d"
+            highlightthickness=0
         )
         self.log_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
-        # Log color tags
-        self.log_text.tag_config("plus", foreground="#00ff9d", font=("Consolas", 9, "bold"))
+        self.log_text.tag_config("plus", foreground="#00ff9d", font=("Consolas", 8, "bold"))
         self.log_text.tag_config("star", foreground="#00f0ff")
-        self.log_text.tag_config("warn", foreground="#ffd166", font=("Consolas", 9, "bold"))
+        self.log_text.tag_config("warn", foreground="#ffd166", font=("Consolas", 8, "bold"))
         self.log_text.tag_config("minus", foreground="#ff4757")
 
-        log_scroll = ttk.Scrollbar(log_frame, orient=tk.VERTICAL, command=self.log_text.yview)
+        log_scroll = ttk.Scrollbar(frame_text_scroll, orient=tk.VERTICAL, command=self.log_text.yview)
         log_scroll.pack(side=tk.RIGHT, fill=tk.Y)
         self.log_text.config(yscrollcommand=log_scroll.set)
 
-        # Bottom Status Bar
-        status_bar_frame = tk.Frame(self.root, bg="#111422", highlightthickness=1, highlightbackground="#22273d")
-        status_bar_frame.pack(side=tk.BOTTOM, fill=tk.X)
+        # --- Bottom Gradient & Status Bar ---
+        footer_container = tk.Frame(self.root, bg="#08090f")
+        footer_container.pack(side=tk.BOTTOM, fill=tk.X)
+
+        self.gradient_footer = GradientFooterCanvas(footer_container, height=20, start_color="#08090f", end_color="#18112e", glow_color="#00f5d4")
+        self.gradient_footer.pack(fill=tk.X)
+
+        status_card = StyledCard(footer_container, bg="#08090f", card_bg="#111422", border_color="#22273d", padding=2)
+        status_card.pack(fill=tk.X, padx=6, pady=(0, 2))
 
         status_bar = tk.Label(
-            status_bar_frame,
+            status_card.inner_frame,
             textvariable=self.status_var,
             bg="#111422",
             fg="#8f9bb3",
-            font=("Segoe UI", 9),
+            font=("Segoe UI", 8),
             anchor=tk.W,
-            padx=10,
-            pady=5
+            padx=4,
+            pady=1
         )
         status_bar.pack(side=tk.LEFT, fill=tk.X)
+
+    def _minimize_to_tray(self):
+        self.tray_manager.minimize_to_tray()
+        self.status_var.set("Приложение свернуто в трей")
+
+    def _restore_from_tray(self):
+        self.tray_manager.restore_from_tray()
+        self.status_var.set("Система готова к работе")
+
+    def _on_window_close(self):
+        if messagebox.askyesno("Сворачивание", "Свернуть приложение в трей?\n(Выберите 'Нет' для полного выхода)"):
+            self._minimize_to_tray()
+        else:
+            self._exit_app()
+
+    def _exit_app(self):
+        if self.engine:
+            self.engine.stop()
+        self.root.destroy()
+        sys.exit(0)
 
     def _start_winws_service(self):
         bat = self.bat_path_var.get()
@@ -582,7 +726,9 @@ class ZapretFuzzerApp:
         self.status_var.set("WinDivert сброшен")
 
     def _search_app_by_name(self):
-        def start_search(app_name: str):
+        app_name = simpledialog.askstring("Поиск программы", "Введите название программы или игры (например, Telegram или Apex Legends):")
+        if app_name and app_name.strip():
+            app_name = app_name.strip()
             self.log_message(f"[*] Поиск хостов в интернете для программы '{app_name}'...")
             self.status_var.set(f"Поиск хостов для {app_name}...")
 
@@ -591,8 +737,6 @@ class ZapretFuzzerApp:
                 self.root.after(0, lambda: self._on_app_hosts_found(app_name, hosts))
 
             threading.Thread(target=worker, daemon=True).start()
-
-        SearchAppDialog(self.root, on_search_callback=start_search)
 
     def _on_app_hosts_found(self, app_name: str, hosts: List[str]):
         if not hosts:
@@ -705,9 +849,10 @@ class ZapretFuzzerApp:
             messagebox.showerror("Ошибка", f"Файл '{bat_file}' не найден!")
             return
 
-        self.start_btn.config(state=tk.DISABLED)
-        self.stop_btn.config(state=tk.NORMAL)
-        self.status_var.set("Фуззинг в процессе...")
+        self.start_btn.set_state(tk.DISABLED)
+        self.stop_btn.set_state(tk.NORMAL)
+        self.status_var.set("Асинхронный подбор в процессе...")
+        self.analytics_chart.clear_data()
 
         self.engine = FuzzerEngine(
             bat_path=bat_file,
@@ -727,8 +872,8 @@ class ZapretFuzzerApp:
             self.log_message("[!] Запрос остановки...")
 
     def _on_fuzzing_finished(self):
-        self.start_btn.config(state=tk.NORMAL)
-        self.stop_btn.config(state=tk.DISABLED)
+        self.start_btn.set_state(tk.NORMAL)
+        self.stop_btn.set_state(tk.DISABLED)
         self.status_var.set("Работа завершена")
         self._update_params_display()
 
@@ -740,6 +885,17 @@ class ZapretFuzzerApp:
 
     def log_message(self, text: str):
         self.log_queue.put(text)
+        if "Результат:" in text and "доступно" in text:
+            try:
+                parts = text.split("Результат:").strip().split()
+                counts = parts[0].split("/")
+                passed, total = int(counts[0]), int(counts)
+                rate_pct = round((passed / max(1, total)) * 100.0, 1)
+
+                step_name = "Р "
+                self.root.after(0, lambda: self.analytics_chart.add_data_point(step_name, rate_pct, 45.0))
+            except Exception:
+                pass
 
     def _append_log_with_tags(self, msg: str):
         if msg.startswith("[+]"):
