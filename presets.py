@@ -5,11 +5,109 @@ import urllib.request
 import urllib.parse
 import re
 import os
+import ipaddress
+import subprocess
 from typing import List, Dict
 
 HISTORY_FILE = "history.json"
 
+# Официальные домены заблокированных и замедляемых сервисов
 DEFAULT_GAME_PRESETS: Dict[str, Dict[str, List[str]]] = {
+    "Discord": {
+        "description": "Discord голос, чаты, CDN и медиа",
+        "domains": [
+            "discord.com",
+            "discord.gg",
+            "discord.media",
+            "discordapp.com",
+            "discordapp.net",
+            "discordcdn.com",
+            "cdn.discordapp.com",
+            "media.discordapp.net",
+            "router.discordapp.net",
+            "gateway.discord.gg"
+        ]
+    },
+    "YouTube": {
+        "description": "YouTube видео и CDN сервера",
+        "domains": [
+            "youtube.com",
+            "googlevideo.com",
+            "ytimg.com",
+            "youtu.be",
+            "youtubei.googleapis.com",
+            "yt3.ggpht.com"
+        ]
+    },
+    "Telegram": {
+        "description": "Telegram мессенджер, голос и веб-версия",
+        "domains": [
+            "t.me",
+            "telegram.org",
+            "telegram.me",
+            "web.telegram.org",
+            "api.telegram.org"
+        ]
+    },
+    "Steam": {
+        "description": "Steam магазин, сообщество и инвентарь",
+        "domains": [
+            "steampowered.com",
+            "steamcommunity.com",
+            "steamstatic.com",
+            "steamcontent.com"
+        ]
+    },
+    "Twitch": {
+        "description": "Twitch стримы и чаты",
+        "domains": [
+            "twitch.tv",
+            "ttvnw.net",
+            "jtvnw.net"
+        ]
+    },
+    "ChatGPT / OpenAI": {
+        "description": "ChatGPT и API OpenAI",
+        "domains": [
+            "chatgpt.com",
+            "openai.com",
+            "oaistatic.com",
+            "oaiusercontent.com"
+        ]
+    },
+    "Instagram & Meta": {
+        "description": "Instagram, Facebook и CDN",
+        "domains": [
+            "instagram.com",
+            "cdninstagram.com",
+            "facebook.com",
+            "fbcdn.net"
+        ]
+    },
+    "Twitter / X": {
+        "description": "X (Twitter) и медиа-сервера",
+        "domains": [
+            "x.com",
+            "twitter.com",
+            "twimg.com"
+        ]
+    },
+    "Notion": {
+        "description": "Notion заметки и базы знаний",
+        "domains": [
+            "notion.so",
+            "notion.site",
+            "notion.new"
+        ]
+    },
+    "Spotify": {
+        "description": "Spotify музыка и подкасты",
+        "domains": [
+            "spotify.com",
+            "scdn.co",
+            "spotifycdn.com"
+        ]
+    },
     "Rainbow Six Siege": {
         "description": "Ubisoft & Rainbow Six Siege сервера",
         "domains": [
@@ -22,51 +120,17 @@ DEFAULT_GAME_PRESETS: Dict[str, Dict[str, List[str]]] = {
             "connect.ubisoft.com",
             "uplay.com"
         ]
-    },
-    "Discord": {
-        "description": "Discord голос, чаты, CDN и медиа",
-        "domains": [
-            "discord.com",
-            "discordapp.com",
-            "discord.gg",
-            "discord.media",
-            "discordapp.net",
-            "discordcdn.com",
-            "cdn.discordapp.com",
-            "media.discordapp.net",
-            "router.discordapp.net"
-        ]
-    },
-    "YouTube": {
-        "description": "YouTube видео и CDN сервера",
-        "domains": [
-            "youtube.com",
-            "googlevideo.com",
-            "ytimg.com",
-            "youtu.be",
-            "youtubei.googleapis.com"
-        ]
-    },
-    "Steam": {
-        "description": "Steam магазин, сообщество и загрузки",
-        "domains": [
-            "steampowered.com",
-            "steamcommunity.com",
-            "steamstatic.com",
-            "steamcontent.com"
-        ]
-    },
-    "Telegram": {
-        "description": "Telegram мессенджер, голос и веб-версия",
-        "domains": [
-            "t.me",
-            "telegram.org",
-            "telegram.me",
-            "web.telegram.org",
-            "api.telegram.org"
-        ]
     }
 }
+
+
+def is_valid_public_ip(ip_str: str) -> bool:
+    """Проверяет, что IP адрес является публичным (не loopback, private, bogon)."""
+    try:
+        ip = ipaddress.ip_address(ip_str)
+        return not (ip.is_private or ip.is_loopback or ip.is_multicast or ip.is_unspecified or ip.is_reserved)
+    except ValueError:
+        return False
 
 
 def load_history() -> Dict[str, List[str]]:
@@ -91,92 +155,89 @@ def save_to_history(app_name: str, hosts: List[str]):
         pass
 
 
+def capture_active_process_ips(process_name: str) -> List[str]:
+    """
+    Перехватывает целевые IP-адреса активных сетевых подключений процесса в Windows (PowerShell).
+    """
+    active_ips = set()
+    if os.name != 'nt' or not process_name:
+        return []
+    try:
+        cmd = f"powershell -Command \"Get-NetTCPConnection | Where-Object {{ (Get-Process -Id $_.OwningProcess -ErrorAction SilentlyContinue).ProcessName -like '*{process_name}*' }} | Select-Object -ExpandProperty RemoteAddress\""
+        output = subprocess.check_output(cmd, shell=True, text=True, stderr=subprocess.DEVNULL)
+        for line in output.splitlines():
+            ip = line.strip()
+            if is_valid_public_ip(ip):
+                active_ips.add(ip)
+    except Exception:
+        pass
+    return list(active_ips)
+
+
 def search_app_hosts_online(app_name: str) -> List[str]:
     """
-    Ищет хосты/домены приложения в сети (DNS генерация + поиск по известным доменам),
-    добавляет результаты и сохраняет в историю.
+    Точный поиск хостов приложения/сайта без шума и мусорных IP.
     """
-    clean_name = re.sub(r'[^a-zA-Z0-9]', '', app_name.lower())
-    found_domains = set()
+    app_clean = app_name.strip().lower()
+    clean_alnum = re.sub(r'[^a-zA-Z0-9]', '', app_clean)
+    found_targets = set()
 
-    # 1. Если имя является готовым доменным именем
-    if "." in app_name and " " not in app_name:
-        found_domains.add(app_name.strip())
+    # 1. Если введено прямое доменное имя
+    if "." in app_clean and " " not in app_clean:
+        domain = app_clean.lstrip("https://").lstrip("http://").split("/")[0]
+        found_targets.add(domain)
+        if not domain.startswith("www."):
+            found_targets.add(f"www.{domain}")
+        save_to_history(app_name, list(found_targets))
+        return list(found_targets)
 
-    # 2. Генерируем стандартные кандидатные домены
-    if clean_name:
-        candidates = [
-            f"{clean_name}.com",
-            f"{clean_name}.net",
-            f"{clean_name}.org",
-            f"{clean_name}.io",
-            f"{clean_name}.ru",
-            f"api.{clean_name}.com",
-            f"cdn.{clean_name}.com",
-            f"game.{clean_name}.com",
-            f"auth.{clean_name}.com",
-            f"server.{clean_name}.com"
-        ]
+    # 2. Поиск по известным сопоставлениям
+    known_aliases = {
+        "discord": ["discord.com", "discord.gg", "discord.media", "discordapp.com", "discordapp.net", "cdn.discordapp.com", "media.discordapp.net", "gateway.discord.gg"],
+        "youtube": ["youtube.com", "googlevideo.com", "ytimg.com", "youtu.be", "youtubei.googleapis.com", "yt3.ggpht.com"],
+        "telegram": ["t.me", "telegram.org", "telegram.me", "web.telegram.org", "api.telegram.org"],
+        "steam": ["steampowered.com", "steamcommunity.com", "steamcontent.com", "steamstatic.com"],
+        "twitch": ["twitch.tv", "ttvnw.net", "jtvnw.net"],
+        "chatgpt": ["chatgpt.com", "openai.com", "oaistatic.com", "oaiusercontent.com"],
+        "openai": ["chatgpt.com", "openai.com", "oaistatic.com", "oaiusercontent.com"],
+        "instagram": ["instagram.com", "cdninstagram.com"],
+        "facebook": ["facebook.com", "fbcdn.net"],
+        "twitter": ["x.com", "twitter.com", "twimg.com"],
+        "x": ["x.com", "twitter.com", "twimg.com"],
+        "notion": ["notion.so", "notion.site", "notion.new"],
+        "spotify": ["spotify.com", "scdn.co", "spotifycdn.com"],
+        "rutracker": ["rutracker.org", "rutracker.cc", "rutracker.net"],
+        "genshin": ["hoyoverse.com", "mihoyo.com", "genshinimpact.com"],
+        "apex": ["ea.com", "respawn.com"],
+        "valorant": ["riotgames.com", "pvp.net"],
+        "minecraft": ["minecraft.net", "mojang.com"]
+    }
 
-        # Известные сопоставления популярных сервисов и игр
-        known_aliases = {
-            "telegram": ["t.me", "telegram.org", "telegram.me", "web.telegram.org"],
-            "steam": ["steampowered.com", "steamcommunity.com", "steamcontent.com"],
-            "discord": ["discord.com", "discord.gg", "discordapp.com"],
-            "youtube": ["youtube.com", "googlevideo.com", "ytimg.com"],
-            "genshin": ["hoyoverse.com", "mihoyo.com", "genshinimpact.com"],
-            "apex": ["ea.com", "respawn.com"],
-            "valorant": ["riotgames.com", "pvp.net"],
-            "twitch": ["twitch.tv", "ttvnw.net"],
-            "spotify": ["spotify.com", "scdn.co"],
-            "minecraft": ["minecraft.net", "mojang.com"]
-        }
+    for alias_key, alias_domains in known_aliases.items():
+        if alias_key in clean_alnum:
+            found_targets.update(alias_domains)
 
-        for alias_key, alias_domains in known_aliases.items():
-            if alias_key in clean_name:
-                candidates.extend(alias_domains)
-
-        for cand in candidates:
-            try:
-                socket.gethostbyname(cand)
-                found_domains.add(cand)
-            except Exception:
-                pass
-
-    # 3. Проверяем совпадения со встроенными пресетами
+    # 3. Поиск по встроенным пресетам
     for preset, data in DEFAULT_GAME_PRESETS.items():
-        if app_name.lower() in preset.lower():
-            found_domains.update(data["domains"])
+        if app_clean in preset.lower() or preset.lower() in app_clean:
+            found_targets.update(data["domains"])
 
-    # 4. Разрешаем домены в IP адреса
-    resolved_targets = list(found_domains)
-    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
-        future_to_dom = {executor.submit(resolve_domain, dom): dom for dom in found_domains}
-        for future in concurrent.futures.as_completed(future_to_dom):
-            ips = future.result()
-            resolved_targets.extend(ips)
+    # 4. Если запущен соответствующий процесс в Windows, снимаем его IP
+    process_ips = capture_active_process_ips(clean_alnum)
+    found_targets.update(process_ips)
 
-    final_hosts = list(set(resolved_targets))
+    # 5. Фолбэк для неизвестных одиночных названий
+    if not found_targets and clean_alnum:
+        found_targets.add(f"{clean_alnum}.com")
 
-    # 5. Сохраняем в историю
+    final_hosts = list(found_targets)
     if final_hosts:
         save_to_history(app_name, final_hosts)
 
     return final_hosts
 
 
-def resolve_domain(domain: str) -> List[str]:
-    resolved = set()
-    try:
-        _, _, ip_list = socket.gethostbyname_ex(domain)
-        for ip in ip_list:
-            resolved.add(ip)
-    except Exception:
-        pass
-    return list(resolved)
-
-
-def fetch_preset_targets(preset_name: str, resolve_ips: bool = True) -> List[str]:
+def fetch_preset_targets(preset_name: str, resolve_ips: bool = False) -> List[str]:
     all_presets = dict(DEFAULT_GAME_PRESETS)
     history = load_history()
 
@@ -187,16 +248,4 @@ def fetch_preset_targets(preset_name: str, resolve_ips: bool = True) -> List[str
     if preset_name not in all_presets:
         return []
 
-    domains = all_presets[preset_name]["domains"]
-    result = list(domains)
-
-    if resolve_ips:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
-            future_to_dom = {executor.submit(resolve_domain, dom): dom for dom in domains if
-                             not dom.replace('.', '').isdigit()}
-            for future in concurrent.futures.as_completed(future_to_dom):
-                ips = future.result()
-                result.extend(ips)
-
-    return list(set(result))
-
+    return list(all_presets[preset_name]["domains"])
