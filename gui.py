@@ -4,459 +4,17 @@ import threading
 import queue
 import os
 import sys
-import ctypes
-from typing import List, Optional, Tuple, Dict
+from typing import List, Optional
 
-from presets import DEFAULT_GAME_PRESETS, fetch_preset_targets, search_app_hosts_online, load_history
+from presets import fetch_preset_targets, search_app_hosts_online, export_presets_to_file, import_presets_from_file
 from fuzzer_engine import FuzzerEngine, WinwsParams
-from updater import check_and_download_github_exe
-
-try:
-    import pystray
-    from PIL import Image, ImageDraw
-    HAS_PYSTRAY = True
-except ImportError:
-    HAS_PYSTRAY = False
-
-
-class RoundedButton(tk.Canvas):
-    """Кастомная кнопка с закругленными углами в стиле Neural Expressive."""
-    def __init__(self, parent, text="", command=None, radius=6,
-                 bg_color="#1a1f33", fg_color="#f0f4f8",
-                 hover_bg="#2a314d", active_bg="#00f5d4",
-                 disabled_bg="#121524", disabled_fg="#525b75",
-                 font=("Segoe UI", 8, "bold"), width=95, height=24,
-                 border_color=None, cursor="hand2"):
-        parent_bg = parent["bg"] if isinstance(parent, (tk.Frame, tk.LabelFrame, tk.Toplevel, tk.Tk)) and "bg" in parent.keys() else "#111422"
-        super().__init__(parent, bg=parent_bg, height=height, width=width, highlightthickness=0, bd=0, cursor=cursor)
-        self.command = command
-        self.radius = radius
-        self.normal_bg = bg_color
-        self.hover_bg = hover_bg
-        self.active_bg = active_bg
-        self.disabled_bg = disabled_bg
-        self.disabled_fg = disabled_fg
-        self.normal_fg = fg_color
-        self.fg_color = fg_color
-        self.text = text
-        self.font = font
-        self.border_color = border_color
-        self.is_disabled = False
-        self.current_bg = bg_color
-
-        self.bind("<Configure>", self._on_resize)
-        self.bind("<Enter>", self._on_enter)
-        self.bind("<Leave>", self._on_leave)
-        self.bind("<Button-1>", self._on_click)
-
-    def _create_rounded_polygon(self, x1, y1, x2, y2, r, **kwargs):
-        points = [
-            x1 + r, y1,
-            x2 - r, y1,
-            x2, y1,
-            x2, y1 + r,
-            x2, y2 - r,
-            x2, y2,
-            x2 - r, y2,
-            x1 + r, y2,
-            x1, y2,
-            x1, y2 - r,
-            x1, y1 + r,
-            x1, y1
-        ]
-        return self.create_polygon(points, smooth=True, **kwargs)
-
-    def _draw(self, fill_color, text_color=None):
-        self.delete("all")
-        w = self.winfo_width() or self.winfo_reqwidth()
-        h = self.winfo_height() or self.winfo_reqheight()
-        if w < 10 or h < 10:
-            return
-        r = min(self.radius, h // 2, w // 2)
-        txt_col = text_color if text_color else self.fg_color
-
-        if self.border_color:
-            self._create_rounded_polygon(1, 1, w - 1, h - 1, r, fill=self.border_color)
-            self._create_rounded_polygon(2, 2, w - 2, h - 2, max(1, r - 1), fill=fill_color)
-        else:
-            self._create_rounded_polygon(1, 1, w - 1, h - 1, r, fill=fill_color)
-
-        self.create_text(w / 2, h / 2, text=self.text, fill=txt_col, font=self.font)
-
-    def _on_resize(self, event):
-        self._draw(self.current_bg)
-
-    def _on_enter(self, event):
-        if not self.is_disabled:
-            self.current_bg = self.hover_bg
-            self._draw(self.hover_bg)
-
-    def _on_leave(self, event):
-        if not self.is_disabled:
-            self.current_bg = self.normal_bg
-            self._draw(self.normal_bg)
-
-    def _on_click(self, event):
-        if not self.is_disabled and self.command:
-            self.current_bg = self.active_bg
-            self._draw(self.active_bg)
-            self.after(120, lambda: self._draw(self.hover_bg if self.current_bg == self.active_bg else self.current_bg))
-            self.command()
-
-    def set_state(self, state):
-        if state == tk.DISABLED or state == "disabled":
-            self.is_disabled = True
-            self.current_bg = self.disabled_bg
-            self._draw(self.disabled_bg, self.disabled_fg)
-            self.config(cursor="")
-        else:
-            self.is_disabled = False
-            self.current_bg = self.normal_bg
-            self._draw(self.normal_bg, self.normal_fg)
-            self.config(cursor="hand2")
-
-    def config(self, **kwargs):
-        if "state" in kwargs:
-            self.set_state(kwargs.pop("state"))
-        if "text" in kwargs:
-            self.text = kwargs.pop("text")
-            self._draw(self.current_bg)
-        if kwargs:
-            super().config(**kwargs)
-
-
-class StyledCard(tk.Frame):
-    """Надежный контейнер-карточка на базе tk.Frame с аккуратной рамкой и автоматическим подгоном высоты."""
-    def __init__(self, parent, bg="#08090f", card_bg="#111422", border_color="#22273d", padding=6, **kwargs):
-        super().__init__(
-            parent,
-            bg=card_bg,
-            highlightbackground=border_color,
-            highlightthickness=1,
-            bd=0,
-            padx=padding,
-            pady=padding,
-            **kwargs
-        )
-        self.inner_frame = self
-
-
-class GradientFooterCanvas(tk.Canvas):
-    """Кастомный нижний холст с плавным переходящим градиентом от фонового к тёмно-акцентному тону."""
-    def __init__(self, parent, height=20, start_color="#08090f", end_color="#18112e", glow_color="#00f5d4", **kwargs):
-        super().__init__(parent, height=height, highlightthickness=0, bd=0, bg=start_color, **kwargs)
-        self.start_color = start_color
-        self.end_color = end_color
-        self.glow_color = glow_color
-        self.bind("<Configure>", self._draw_gradient)
-
-    def _hex_to_rgb(self, hex_str: str) -> Tuple[int, int, int]:
-        hex_str = hex_str.lstrip('#')
-        return tuple(int(hex_str[i:i+2], 16) for i in (0, 2, 4))
-
-    def _rgb_to_hex(self, rgb):
-        return f"#{int(rgb[0]):02x}{int(rgb[1]):02x}{int(rgb[2]):02x}"
-
-    def _draw_gradient(self, event=None):
-        self.delete("all")
-        w = self.winfo_width()
-        h = self.winfo_height()
-        if w <= 0 or h <= 0:
-            return
-
-        r1, g1, b1 = self._hex_to_rgb(self.start_color)
-        r2, g2, b2 = self._hex_to_rgb(self.end_color)
-
-        steps = max(1, h)
-        for i in range(steps):
-            ratio = i / float(steps)
-            nr = int(r1 + (r2 - r1) * ratio)
-            ng = int(g1 + (g2 - g1) * ratio)
-            nb = int(b1 + (b2 - b1) * ratio)
-            color = self._rgb_to_hex((nr, ng, nb))
-            self.create_line(0, i, w, i, fill=color)
-
-        self.create_line(0, h - 1, w, h - 1, fill=self.glow_color, width=1)
-
-
-class FuzzingAnalyticsCanvas(tk.Canvas):
-    """Компактная векторная диаграмма доступности доменов и задержки (ping ms). Все шрифты целые."""
-    def __init__(self, parent, bg="#0d101d", **kwargs):
-        super().__init__(parent, bg=bg, highlightthickness=0, bd=0, **kwargs)
-        self.data_history: List[Tuple[str, float, float]] = []
-        self.bind("<Configure>", self.redraw)
-
-    def add_data_point(self, label: str, success_rate: float, latency: float):
-        self.data_history.append((label, success_rate, latency))
-        if len(self.data_history) > 20:
-            self.data_history.pop(0)
-        self.redraw()
-
-    def clear_data(self):
-        self.data_history.clear()
-        self.redraw()
-
-    def redraw(self, event=None):
-        self.delete("all")
-        w = self.winfo_width()
-        h = self.winfo_height()
-        if w < 20 or h < 20:
-            return
-
-        pad_left, pad_right, pad_top, pad_bottom = 28, 10, 14, 18
-        chart_w = w - pad_left - pad_right
-        chart_h = h - pad_top - pad_bottom
-
-        self.create_rectangle(pad_left, pad_top, w - pad_right, h - pad_bottom, outline="#22273d", fill="#08090f")
-
-        for pct in [0, 50, 100]:
-            y = pad_top + chart_h * (1.0 - pct / 100.0)
-            self.create_line(pad_left, y, w - pad_right, y, fill="#181c2e", dash=(2, 4))
-            self.create_text(pad_left - 4, y, text=f"{pct}%", fill="#525b75", font=("Segoe UI", 7, "bold"), anchor="e")
-
-        if not self.data_history:
-            self.create_text(w / 2, h / 2, text="📊 Ожидание данных раунда...", fill="#525b75", font=("Segoe UI", 8, "italic"))
-            return
-
-        n = len(self.data_history)
-        step_x = chart_w / max(1, n - 1) if n > 1 else chart_w / 2
-
-        points_success = []
-        points_latency = []
-        max_lat = max([lat for _, _, lat in self.data_history if lat > 0] or [100.0])
-
-        for i, (label, rate, lat) in enumerate(self.data_history):
-            x = pad_left + (i * step_x if n > 1 else chart_w / 2)
-            y_rate = pad_top + chart_h * (1.0 - rate / 100.0)
-            y_lat = pad_top + chart_h * (1.0 - min(lat, max_lat) / max_lat)
-
-            points_success.append((x, y_rate))
-            points_latency.append((x, y_lat))
-
-            self.create_text(x, h - pad_bottom + 8, text=label.replace("МУТАЦИЯ #", "#"), fill="#8f9bb3", font=("Segoe UI", 7))
-
-        if len(points_success) > 1:
-            poly_points = [pad_left, h - pad_bottom]
-            for x, y in points_success:
-                poly_points.extend([x, y])
-            poly_points.extend([points_success[-1][0], h - pad_bottom])
-            self.create_polygon(poly_points, fill="#00f5d4", stipple="gray25" if os.name == 'nt' else "")
-
-            for i in range(len(points_success) - 1):
-                self.create_line(points_success[i][0], points_success[i], points_success[i+1][0], points_success[i+1], fill="#00f5d4", width=2, capstyle=tk.ROUND)
-
-            for i in range(len(points_latency) - 1):
-                self.create_line(points_latency[i][0], points_latency[i], points_latency[i+1][0], points_latency[i+1], fill="#7000ff", width=1, dash=(3, 2))
-
-        for (x, y) in points_success:
-            self.create_oval(x - 2, y - 2, x + 2, y + 2, fill="#00f5d4", outline="#ffffff")
-
-        self.create_line(w - 120, pad_top - 6, w - 108, pad_top - 6, fill="#00f5d4", width=2)
-        self.create_text(w - 104, pad_top - 6, text="Успех (%)", fill="#00f5d4", font=("Segoe UI", 7, "bold"), anchor="w")
-
-        self.create_line(w - 52, pad_top - 6, w - 40, pad_top - 6, fill="#7000ff", width=2)
-        self.create_text(w - 36, pad_top - 6, text="Пинг", fill="#7000ff", font=("Segoe UI", 7, "bold"), anchor="w")
-
-
-class MiniTrayOverlay(tk.Toplevel):
-    """Компактная плавающая мини-панель для разворачивания приложения при сворачивании."""
-    def __init__(self, parent, on_restore_cb, on_exit_cb):
-        super().__init__(parent)
-        self.on_restore_cb = on_restore_cb
-        self.on_exit_cb = on_exit_cb
-
-        self.overrideredirect(True)
-        self.attributes("-topmost", True)
-        self.configure(bg="#111422")
-
-        ws = self.winfo_screenwidth()
-        hs = self.winfo_screenheight()
-        w, h = 220, 38
-        x = max(10, ws - w - 24)
-        y = max(10, hs - h - 64)
-        self.geometry(f"{w}x{h}+{x}+{y}")
-
-        frame = tk.Frame(self, bg="#111422", highlightbackground="#00f5d4", highlightthickness=1)
-        frame.pack(fill=tk.BOTH, expand=True)
-
-        lbl = tk.Label(frame, text="⚡ Zapret Fuzzer", font=("Segoe UI", 8, "bold"), bg="#111422", fg="#00f5d4")
-        lbl.pack(side=tk.LEFT, padx=(8, 4))
-
-        btn_restore = tk.Button(
-            frame, text="↗ Развернуть", font=("Segoe UI", 8, "bold"),
-            bg="#1a1f33", fg="#f0f4f8", activebackground="#00f5d4", activeforeground="#08090f",
-            bd=0, command=self._restore, cursor="hand2", padx=6, pady=2
-        )
-        btn_restore.pack(side=tk.LEFT, padx=4)
-
-        btn_close = tk.Button(
-            frame, text="✕", font=("Segoe UI", 8, "bold"),
-            bg="#111422", fg="#ff4757", activebackground="#ff4757", activeforeground="#ffffff",
-            bd=0, command=self._exit, cursor="hand2", padx=4
-        )
-        btn_close.pack(side=tk.RIGHT, padx=6)
-
-    def _restore(self):
-        self.destroy()
-        self.on_restore_cb()
-
-    def _exit(self):
-        self.destroy()
-        self.on_exit_cb()
-
-
-class TrayManager:
-    """Универсальный менеджер системного трея с интеграцией pystray и плавающим оверлеем."""
-    def __init__(self, root: tk.Tk, on_restore_cb, on_exit_cb):
-        self.root = root
-        self.on_restore_cb = on_restore_cb
-        self.on_exit_cb = on_exit_cb
-        self.is_minimized = False
-        self.pystray_icon = None
-        self.overlay_window = None
-
-    def _create_pystray_image(self):
-        if not HAS_PYSTRAY:
-            return None
-        img = Image.new('RGBA', (64, 64), color=(8, 9, 15, 255))
-        draw = ImageDraw.Draw(img)
-        draw.ellipse([6, 6, 58, 58], fill=(0, 245, 212, 255))
-        draw.polygon([(28, 14), (44, 14), (30, 32), (40, 32), (20, 52), (28, 32), (20, 32)], fill=(8, 9, 15, 255))
-        return img
-
-    def _start_pystray(self) -> bool:
-        if not HAS_PYSTRAY or self.pystray_icon is not None:
-            return False
-        try:
-            image = self._create_pystray_image()
-            menu = pystray.Menu(
-                pystray.MenuItem("Показать Zapret Fuzzer", lambda icon, item: self.root.after(0, self.restore_from_tray)),
-                pystray.MenuItem("Выход", lambda icon, item: self.root.after(0, self.on_exit_cb))
-            )
-            self.pystray_icon = pystray.Icon("ZapretFuzzer", image, "Zapret Fuzzer & Strategy Tuner", menu)
-            threading.Thread(target=self.pystray_icon.run, daemon=True).start()
-            return True
-        except Exception:
-            self.pystray_icon = None
-            return False
-
-    def minimize_to_tray(self):
-        self.is_minimized = True
-        self.root.withdraw()
-
-        started_pystray = self._start_pystray()
-
-        if not started_pystray and (self.overlay_window is None or not self.overlay_window.winfo_exists()):
-            self.overlay_window = MiniTrayOverlay(self.root, on_restore_cb=self.restore_from_tray, on_exit_cb=self.on_exit_cb)
-
-    def restore_from_tray(self):
-        self.is_minimized = False
-        if self.overlay_window and self.overlay_window.winfo_exists():
-            self.overlay_window.destroy()
-            self.overlay_window = None
-
-        if self.pystray_icon:
-            try:
-                self.pystray_icon.stop()
-            except Exception:
-                pass
-            self.pystray_icon = None
-
-        self.root.deiconify()
-        self.root.lift()
-        self.root.focus_force()
-
-
-class HistoryDialog(tk.Toplevel):
-    """Компактное диалоговое окно истории."""
-    def __init__(self, parent, on_select_callback):
-        super().__init__(parent)
-        self.title("🧠 Neural Expressive — История приложений")
-        self.geometry("450x280")
-        self.resizable(False, False)
-        self.configure(bg="#08090f")
-        self.on_select_callback = on_select_callback
-
-        self._build_ui()
-        self.transient(parent)
-        self.grab_set()
-
-    def _build_ui(self):
-        card = StyledCard(self, bg="#08090f", card_bg="#111422", border_color="#22273d", padding=6)
-        card.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-
-        container = card.inner_frame
-
-        header_lbl = tk.Label(
-            container,
-            text="📜 История найденных приложений & хостов",
-            font=("Segoe UI", 9, "bold"),
-            bg="#111422",
-            fg="#00f5d4"
-        )
-        header_lbl.pack(anchor=tk.W, pady=(0, 4))
-
-        frame_list = tk.Frame(container, bg="#111422")
-        frame_list.pack(fill=tk.BOTH, expand=True, pady=(0, 4))
-
-        self.listbox = tk.Listbox(
-            frame_list,
-            height=5,
-            font=("Consolas", 8),
-            selectmode=tk.SINGLE,
-            bg="#181c2e",
-            fg="#f0f4f8",
-            selectbackground="#7000ff",
-            selectforeground="#ffffff",
-            highlightthickness=0,
-            activestyle="none",
-            bd=0
-        )
-        self.listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-
-        scrollbar = ttk.Scrollbar(frame_list, orient=tk.VERTICAL, command=self.listbox.yview)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        self.listbox.config(yscrollcommand=scrollbar.set)
-
-        self.history_data = load_history()
-        for app_name, hosts in self.history_data.items():
-            self.listbox.insert(tk.END, f"  ⚡ {app_name:<18} — [{len(hosts)} хостов/IP]")
-
-        btn_frame = tk.Frame(container, bg="#111422")
-        btn_frame.pack(fill=tk.X)
-
-        RoundedButton(
-            btn_frame,
-            text="📥 Загрузить в фуззер",
-            command=self._load_selected,
-            radius=6,
-            bg_color="#00f5d4",
-            fg_color="#08090f",
-            hover_bg="#00d4b8",
-            width=130,
-            height=24
-        ).pack(side=tk.RIGHT, padx=(4, 0))
-
-        RoundedButton(
-            btn_frame,
-            text="Закрыть",
-            command=self.destroy,
-            radius=6,
-            bg_color="#1a1f33",
-            fg_color="#f0f4f8",
-            hover_bg="#2a314d",
-            width=75,
-            height=24
-        ).pack(side=tk.RIGHT)
-
-    def _load_selected(self):
-        selection = self.listbox.curselection()
-        if selection:
-            idx = selection[0]
-            app_name = list(self.history_data.keys())[idx]
-            hosts = self.history_data[app_name]
-            self.on_select_callback(app_name, hosts)
-            self.destroy()
+from updater import check_and_download_github_exe, reset_base_bats_from_github
+
+from ui_components import RoundedButton, StyledCard, GradientFooterCanvas
+from analytics import FuzzingAnalyticsCanvas
+from tray import TrayManager
+from history_dialog import HistoryDialog
+from params_dialog import InteractiveParamsDialog
 
 
 class ZapretFuzzerApp:
@@ -481,6 +39,66 @@ class ZapretFuzzerApp:
         self._build_ui()
         self._start_log_listener()
         self._check_winws_periodically()
+        self.root.after(200, lambda: self._update_params_display(force_reload=True))
+
+    def _get_current_params_from_ui(self) -> Optional[WinwsParams]:
+        if not hasattr(self, "param_vars"):
+            return None
+        try:
+            return WinwsParams(
+                tcp_split=int(self.param_vars["tcp_split"].get().strip()),
+                tcp_seqovl=int(self.param_vars["tcp_seqovl"].get().strip()),
+                tcp_ttl=int(self.param_vars["tcp_ttl"].get().strip()),
+                udp_repeats=int(self.param_vars["udp_repeats"].get().strip()),
+                udp_cutoff=str(self.param_vars["udp_cutoff"].get()).strip()
+            )
+        except (ValueError, KeyError):
+            return None
+
+    def _update_params_display(self, params: Optional[WinwsParams] = None, force_reload: bool = False):
+        if params is None:
+            if not force_reload:
+                existing = self._get_current_params_from_ui()
+                if existing is not None:
+                    return
+            try:
+                temp_engine = FuzzerEngine(bat_path=self.bat_path_var.get())
+                params = temp_engine.extract_baseline()
+            except Exception:
+                return
+
+        if params and hasattr(self, "param_vars"):
+            self.param_vars["tcp_split"].set(str(params.tcp_split))
+            self.param_vars["tcp_seqovl"].set(str(params.tcp_seqovl))
+            self.param_vars["tcp_ttl"].set(str(params.tcp_ttl))
+            self.param_vars["udp_repeats"].set(str(params.udp_repeats))
+            self.param_vars["udp_cutoff"].set(str(params.udp_cutoff))
+
+    def _apply_custom_params(self):
+        params = self._get_current_params_from_ui()
+        if params is None:
+            messagebox.showerror("Ошибка", "Некорректные значения параметров! Проверьте введенные числа.")
+            return
+
+        bat_file = self.bat_path_var.get()
+        if not os.path.exists(bat_file):
+            messagebox.showerror("Ошибка", f"Файл '{bat_file}' не найден!")
+            return
+
+        try:
+            temp_engine = FuzzerEngine(bat_path=bat_file)
+            temp_engine.patch_original_bat(params)
+            messagebox.showinfo("Успех", f"Параметры успешно сохранены в '{os.path.basename(bat_file)}'!")
+            self.log_message(f"[+] Пользовательские параметры применены к '{os.path.basename(bat_file)}': {params}")
+        except Exception as e:
+            messagebox.showerror("Ошибка", f"Не удалось обновить .bat файл: {e}")
+
+    def _reset_params_to_baseline(self):
+        self._update_params_display(force_reload=True)
+        self.log_message("[-] Параметры сброшены к значениям из .bat файла.")
+
+    def _open_interactive_params_window(self):
+        InteractiveParamsDialog(self.root, self.param_vars, on_run_test_cb=self._run_single_test)
 
     def _setup_styles(self):
         style = ttk.Style()
@@ -499,7 +117,7 @@ class ZapretFuzzerApp:
         main_container.pack(fill=tk.BOTH, expand=True, padx=6, pady=(6, 0))
 
         # --- Header Banner Card ---
-        header_card = StyledCard(main_container, bg="#08090f", card_bg="#0d101d", border_color="#22273d", padding=4)
+        header_card = StyledCard(main_container, card_bg="#0d101d", border_color="#22273d", padding=4)
         header_card.pack(fill=tk.X, pady=(0, 4))
 
         header_content = header_card.inner_frame
@@ -532,7 +150,7 @@ class ZapretFuzzerApp:
         ).pack(side=tk.RIGHT, padx=2)
 
         # --- Section 1: Strategy & Winws Control Card ---
-        sec1_card = StyledCard(main_container, bg="#08090f", card_bg="#111422", border_color="#22273d", padding=5)
+        sec1_card = StyledCard(main_container, card_bg="#111422", border_color="#22273d", padding=5)
         sec1_card.pack(fill=tk.X, pady=(0, 4))
 
         top_frame = sec1_card.inner_frame
@@ -574,9 +192,10 @@ class ZapretFuzzerApp:
         RoundedButton(svc_frame, text="⏹ Остановить", command=self._stop_winws_service, radius=6, width=80, height=22).pack(side=tk.LEFT, padx=2)
         RoundedButton(svc_frame, text="🔄 Перезапустить", command=self._restart_winws_service, radius=6, width=100, height=22).pack(side=tk.LEFT, padx=2)
         RoundedButton(svc_frame, text="🧹 Сброс WinDivert", command=self._reset_windivert_service, radius=6, bg_color="#ff4757", hover_bg="#ff6b81", width=110, height=22).pack(side=tk.LEFT, padx=(6, 2))
+        RoundedButton(svc_frame, text="♻️ Восстановить .bat", command=self._reset_base_bats, radius=6, bg_color="#3a86ff", hover_bg="#2563eb", width=125, height=22).pack(side=tk.LEFT, padx=2)
 
         # --- Section 2: Presets Card ---
-        sec2_card = StyledCard(main_container, bg="#08090f", card_bg="#111422", border_color="#22273d", padding=5)
+        sec2_card = StyledCard(main_container, card_bg="#111422", border_color="#22273d", padding=5)
         sec2_card.pack(fill=tk.X, pady=(0, 4))
 
         preset_frame = sec2_card.inner_frame
@@ -618,15 +237,39 @@ class ZapretFuzzerApp:
         )
         search_app_btn.grid(row=0, column=len(presets_list), padx=2, pady=1)
 
+        import_btn = RoundedButton(
+            preset_btn_container,
+            text="📥 Импорт",
+            command=self._import_presets,
+            radius=6,
+            bg_color="#181c2e",
+            hover_bg="#3a86ff",
+            width=80,
+            height=22
+        )
+        import_btn.grid(row=0, column=len(presets_list)+1, padx=2, pady=1)
+
+        export_btn = RoundedButton(
+            preset_btn_container,
+            text="📤 Экспорт",
+            command=self._export_presets,
+            radius=6,
+            bg_color="#181c2e",
+            hover_bg="#3a86ff",
+            width=80,
+            height=22
+        )
+        export_btn.grid(row=0, column=len(presets_list)+2, padx=2, pady=1)
+
         # --- Section 3: Middle Split (Hosts + Analytics + Parameters) ---
         middle_frame = tk.Frame(main_container, bg="#08090f")
         middle_frame.pack(fill=tk.X, expand=False, pady=(0, 4))
 
-        hosts_card = StyledCard(middle_frame, bg="#08090f", card_bg="#111422", border_color="#22273d", padding=5)
+        hosts_card = StyledCard(middle_frame, card_bg="#111422", border_color="#22273d", padding=5)
         hosts_card.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 2))
 
         hosts_frame = hosts_card.inner_frame
-        tk.Label(hosts_frame, text="🌐 Цели и IP", font=("Segoe UI", 9, "bold"), bg="#111422", fg="#00f5d4").pack(anchor=tk.W, pady=(0, 2))
+        tk.Label(hosts_frame, text="🌐 Целевые домены", font=("Segoe UI", 9, "bold"), bg="#111422", fg="#00f5d4").pack(anchor=tk.W, pady=(0, 2))
 
         frame_host_list = tk.Frame(hosts_frame, bg="#111422")
         frame_host_list.pack(fill=tk.BOTH, expand=True)
@@ -653,10 +296,10 @@ class ZapretFuzzerApp:
         hosts_btn_frame = tk.Frame(hosts_frame, bg="#111422")
         hosts_btn_frame.pack(fill=tk.X, pady=(2, 0))
 
-        RoundedButton(hosts_btn_frame, text="🗑️ Удалить", command=self._remove_selected_host, radius=6, width=95, height=20).pack(side=tk.LEFT, padx=1)
+        RoundedButton(hosts_btn_frame, text="🗑️ Удалить", command=self._remove_selected_host, radius=6, width=75, height=20).pack(side=tk.LEFT, padx=1)
         RoundedButton(hosts_btn_frame, text="🧹 Очистить", command=self._clear_hosts, radius=6, width=75, height=20).pack(side=tk.LEFT, padx=1)
 
-        analytics_card = StyledCard(middle_frame, bg="#08090f", card_bg="#111422", border_color="#22273d", padding=5)
+        analytics_card = StyledCard(middle_frame, card_bg="#111422", border_color="#22273d", padding=5)
         analytics_card.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=2)
 
         analytics_frame = analytics_card.inner_frame
@@ -665,26 +308,117 @@ class ZapretFuzzerApp:
         self.analytics_chart = FuzzingAnalyticsCanvas(analytics_frame, bg="#0d101d", height=70)
         self.analytics_chart.pack(fill=tk.BOTH, expand=True)
 
-        params_card = StyledCard(middle_frame, bg="#08090f", card_bg="#111422", border_color="#22273d", padding=5)
+        params_card = StyledCard(middle_frame, card_bg="#111422", border_color="#22273d", padding=5)
         params_card.pack(side=tk.RIGHT, fill=tk.Y, padx=(2, 0))
 
         params_frame = params_card.inner_frame
-        tk.Label(params_frame, text="🎛️ Параметры", font=("Segoe UI", 9, "bold"), bg="#111422", fg="#00f5d4").grid(row=0, column=0, columnspan=2, sticky=tk.W, pady=(0, 2))
+        params_title_label = tk.Label(
+            params_frame,
+            text="🎛️ Параметры ⚙️",
+            font=("Segoe UI", 9, "bold"),
+            bg="#111422",
+            fg="#00f5d4",
+            cursor="hand2"
+        )
+        params_title_label.grid(row=0, column=0, columnspan=2, sticky=tk.W, pady=(0, 2))
+        params_title_label.bind("<Button-1>", lambda e: self._open_interactive_params_window())
 
-        self.param_labels = {}
+        self.param_vars = {
+            "tcp_split": tk.StringVar(value="1"),
+            "tcp_seqovl": tk.StringVar(value="664"),
+            "tcp_ttl": tk.StringVar(value="0"),
+            "udp_repeats": tk.StringVar(value="8"),
+            "udp_cutoff": tk.StringVar(value="n4")
+        }
+        self.param_entries = {}
+
         param_names = [
-            ("TCP Split:", "tcp_split", "1"),
-            ("TCP SeqOvl:", "tcp_seqovl", "664"),
-            ("TCP TTL:", "tcp_ttl", "0"),
-            ("UDP Repeats:", "udp_repeats", "8"),
-            ("UDP Cutoff:", "udp_cutoff", "n4")
+            ("TCP Split:", "tcp_split"),
+            ("TCP SeqOvl:", "tcp_seqovl"),
+            ("TCP TTL:", "tcp_ttl"),
+            ("UDP Repeats:", "udp_repeats"),
+            ("UDP Cutoff:", "udp_cutoff")
         ]
 
-        for row, (title, key, default_val) in enumerate(param_names, start=1):
+        for row, (title, key) in enumerate(param_names, start=1):
             tk.Label(params_frame, text=title, font=("Segoe UI", 8, "bold"), bg="#111422", fg="#8f9bb3").grid(row=row, column=0, sticky=tk.W, pady=1, padx=(0, 4))
-            val_lbl = tk.Label(params_frame, text=default_val, font=("Consolas", 8, "bold"), bg="#111422", fg="#00f5d4")
-            val_lbl.grid(row=row, column=1, sticky=tk.E, pady=1)
-            self.param_labels[key] = val_lbl
+            entry = tk.Entry(
+                params_frame,
+                textvariable=self.param_vars[key],
+                width=6,
+                font=("Consolas", 8, "bold"),
+                bg="#181c2e",
+                fg="#00f5d4",
+                insertbackground="#00f5d4",
+                bd=0,
+                highlightthickness=1,
+                highlightbackground="#22273d",
+                highlightcolor="#00f5d4",
+                justify=tk.CENTER
+            )
+            entry.grid(row=row, column=1, sticky=tk.E, pady=1)
+            self.param_entries[key] = entry
+
+        self.require_100_var = tk.BooleanVar(value=False)
+        strict_chk = tk.Checkbutton(
+            params_frame,
+            text="🎯 100% пробив",
+            variable=self.require_100_var,
+            font=("Segoe UI", 8, "bold"),
+            bg="#111422",
+            fg="#00f5d4",
+            selectcolor="#181c2e",
+            activebackground="#111422",
+            activeforeground="#00f5d4",
+            bd=0,
+            highlightthickness=0
+        )
+        strict_chk.grid(row=6, column=0, columnspan=2, sticky=tk.W, pady=(3, 1))
+
+        single_test_btn = RoundedButton(
+            params_frame,
+            text="⚡ Разовый тест",
+            command=self._run_single_test,
+            radius=6,
+            bg_color="#7000ff",
+            fg_color="#ffffff",
+            hover_bg="#8a2be2",
+            font=("Segoe UI", 8, "bold"),
+            width=115,
+            height=20
+        )
+        single_test_btn.grid(row=7, column=0, columnspan=2, pady=(2, 1))
+
+        btn_sub_frame = tk.Frame(params_frame, bg="#111422")
+        btn_sub_frame.grid(row=8, column=0, columnspan=2, pady=(1, 0))
+
+        apply_btn = RoundedButton(
+            btn_sub_frame,
+            text="💾 В .bat",
+            command=self._apply_custom_params,
+            radius=5,
+            bg_color="#181c2e",
+            fg_color="#00f5d4",
+            hover_bg="#22273d",
+            font=("Segoe UI", 7, "bold"),
+            width=55,
+            height=18
+        )
+        apply_btn.pack(side=tk.LEFT, padx=1)
+
+        reset_btn = RoundedButton(
+            btn_sub_frame,
+            text="🔄 Из .bat",
+            command=self._reset_params_to_baseline,
+            radius=5,
+            bg_color="#181c2e",
+            fg_color="#8f9bb3",
+            hover_bg="#22273d",
+            font=("Segoe UI", 7, "bold"),
+            width=55,
+            height=18
+        )
+        reset_btn.pack(side=tk.LEFT, padx=1)
 
         # --- Section 4: Engine Execution Controls ---
         ctrl_frame = tk.Frame(main_container, bg="#08090f")
@@ -719,7 +453,7 @@ class ZapretFuzzerApp:
         self.stop_btn.pack(side=tk.RIGHT, padx=(2, 0))
 
         # --- Section 5: Terminal Console Log Card ---
-        log_card = StyledCard(main_container, bg="#08090f", card_bg="#05060a", border_color="#22273d", padding=5)
+        log_card = StyledCard(main_container, card_bg="#05060a", border_color="#22273d", padding=5)
         log_card.pack(fill=tk.BOTH, expand=True, pady=(0, 2))
 
         log_frame = log_card.inner_frame
@@ -757,7 +491,7 @@ class ZapretFuzzerApp:
         self.gradient_footer = GradientFooterCanvas(footer_container, height=20, start_color="#08090f", end_color="#18112e", glow_color="#00f5d4")
         self.gradient_footer.pack(fill=tk.X)
 
-        status_card = StyledCard(footer_container, bg="#08090f", card_bg="#111422", border_color="#22273d", padding=2)
+        status_card = StyledCard(footer_container, card_bg="#111422", border_color="#22273d", padding=2)
         status_card.pack(fill=tk.X, padx=6, pady=(0, 2))
 
         status_bar = tk.Label(
@@ -830,8 +564,13 @@ class ZapretFuzzerApp:
             self.status_var.set(f"Поиск хостов для {app_name}...")
 
             def worker():
-                hosts = search_app_hosts_online(app_name)
-                self.root.after(0, lambda: self._on_app_hosts_found(app_name, hosts))
+                try:
+                    hosts = search_app_hosts_online(app_name)
+                    self.root.after(0, lambda: self._on_app_hosts_found(app_name, hosts))
+                except Exception as e:
+                    err_msg = str(e)
+                    self.root.after(0, lambda: self.log_message(f"[!] Ошибка поиска хостов для '{app_name}': {err_msg}"))
+                    self.root.after(0, lambda: self.status_var.set("Ошибка поиска хостов"))
 
             threading.Thread(target=worker, daemon=True).start()
 
@@ -848,7 +587,7 @@ class ZapretFuzzerApp:
                 self.hosts_listbox.insert(tk.END, h)
                 added_count += 1
 
-        self.log_message(f"[+] Для '{app_name}' найдено и добавлено {added_count} хостов/IP (сохранено в историю).")
+        self.log_message(f"[+] Для '{app_name}' найдено и добавлено {added_count} доменов (сохранено в историю).")
         self.status_var.set(f"Добавлено {added_count} хостов для {app_name}")
 
     def _open_history_dialog(self):
@@ -863,6 +602,37 @@ class ZapretFuzzerApp:
                 added_count += 1
         self.log_message(f"[+] Из истории '{app_name}' загружено {added_count} хостов.")
 
+    def _reset_base_bats(self):
+        msg_prompt = "Скачать чистые оригинальные .bat файлы из папки 'base bats' репозитория GitHub?\n\nВсе имеющиеся .bat файлы в папке приложения будут перезаписаны исходными версиями."
+        if not messagebox.askyesno("Восстановление .bat файлов", msg_prompt):
+            return
+
+        self.log_message("[*] Загрузка чистых исходных .bat файлов из GitHub ('base bats')...")
+        self.status_var.set("Загрузка .bat файлов...")
+
+        def task():
+            try:
+                if self.engine:
+                    self.engine.stop()
+                FuzzerEngine.stop_winws()
+                success, msg, files = reset_base_bats_from_github()
+                if success:
+                    file_list_str = ", ".join(files[:6]) + ("..." if len(files) > 6 else "")
+                    self.log_message(f"[+] {msg}\n    Обновлено: {file_list_str}")
+                    self.status_var.set("Чистые .bat файлы восстановлены")
+                    info_msg = f"Успешно восстановлено {len(files)} базовых .bat файлов из GitHub!\n\nФайлы перезаписаны рядом с fuzzer.exe."
+                    messagebox.showinfo("Успех", info_msg)
+                else:
+                    self.log_message(f"[!] {msg}")
+                    self.status_var.set("Ошибка восстановления .bat")
+                    messagebox.showerror("Ошибка", msg)
+            except Exception as e:
+                self.log_message(f"[!] Ошибка восстановления .bat: {e}")
+                self.status_var.set("Ошибка восстановления .bat")
+                messagebox.showerror("Ошибка", str(e))
+
+        threading.Thread(target=task, daemon=True).start()
+
     def _trigger_update(self):
         if not messagebox.askyesno("Обновление", "Запустить обновление fuzzer.exe с GitHub?\nТекущий процесс будет перезапущен с новой версией."):
             return
@@ -871,9 +641,15 @@ class ZapretFuzzerApp:
         self.status_var.set("Скачивание fuzzer.exe...")
 
         def worker():
-            success, msg = check_and_download_github_exe()
-            if not success:
-                self.root.after(0, lambda: self.log_message(f"[!] Ошибка обновления: {msg}"))
+            try:
+                success, msg = check_and_download_github_exe()
+                if not success:
+                    self.root.after(0, lambda: self.log_message(f"[!] Ошибка обновления: {msg}"))
+                    self.root.after(0, lambda: self.status_var.set("Ошибка обновления"))
+            except Exception as e:
+                err_msg = str(e)
+                self.root.after(0, lambda: self.log_message(f"[!] Ошибка скачивания обновления: {err_msg}"))
+                self.root.after(0, lambda: self.status_var.set("Ошибка скачивания fuzzer.exe"))
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -884,15 +660,20 @@ class ZapretFuzzerApp:
         )
         if file_selected:
             self.bat_path_var.set(file_selected)
-            self._update_params_display()
+            self._update_params_display(force_reload=True)
 
     def _add_preset_hosts(self, preset_name: str):
         self.log_message(f"[*] Загрузка хостов и IP для '{preset_name}'...")
-        self.status_var.set(f"Поиск IP адресов для {preset_name}...")
+        self.status_var.set(f"Поиск доменов для {preset_name}...")
 
         def worker():
-            targets = fetch_preset_targets(preset_name, resolve_ips=True)
-            self.root.after(0, lambda: self._on_preset_loaded(preset_name, targets))
+            try:
+                targets = fetch_preset_targets(preset_name, resolve_ips=True)
+                self.root.after(0, lambda: self._on_preset_loaded(preset_name, targets))
+            except Exception as e:
+                err_msg = str(e)
+                self.root.after(0, lambda: self.log_message(f"[!] Ошибка загрузки пресета '{preset_name}': {err_msg}"))
+                self.root.after(0, lambda: self.status_var.set("Ошибка загрузки пресета"))
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -904,7 +685,7 @@ class ZapretFuzzerApp:
                 self.hosts_listbox.insert(tk.END, host)
                 added_count += 1
 
-        self.log_message(f"[+] Для '{preset_name}' добавлено {added_count} новых хостов/IP (всего: {len(self.target_hosts)}).")
+        self.log_message(f"[+] Для '{preset_name}' добавлено {added_count} новых доменов (всего: {len(self.target_hosts)}).")
         self.status_var.set(f"Добавлено {added_count} хостов для {preset_name}")
 
     def _remove_selected_host(self):
@@ -917,24 +698,92 @@ class ZapretFuzzerApp:
                 self.target_hosts.remove(host)
             self.log_message(f"[-] Удален хост: {host}")
 
+    def _import_presets(self):
+        file_path = filedialog.askopenfilename(
+            title="Выберите JSON файл пресетов",
+            filetypes=[("JSON Files", "*.json"), ("All Files", "*.*")]
+        )
+        if file_path:
+            ok, count = import_presets_from_file(file_path)
+            if ok:
+                self.log_message(f"[+] Импортировано {count} пресетов из '{os.path.basename(file_path)}'")
+                messagebox.showinfo("Импорт пресетов", f"Успешно импортировано пресетов: {count}")
+            else:
+                messagebox.showerror("Ошибка", "Не удалось прочитать или распознать файл пресетов.")
+
+    def _export_presets(self):
+        file_path = filedialog.asksaveasfilename(
+            title="Сохранить пресеты как JSON",
+            defaultextension=".json",
+            filetypes=[("JSON Files", "*.json"), ("All Files", "*.*")]
+        )
+        if file_path:
+            if export_presets_to_file(file_path):
+                self.log_message(f"[+] Пресеты экспортированы в '{os.path.basename(file_path)}'")
+                messagebox.showinfo("Экспорт пресетов", "Пресеты успешно сохранены!")
+            else:
+                messagebox.showerror("Ошибка", "Не удалось экспортировать пресеты.")
+
+    def _run_single_test(self):
+        if not self.target_hosts:
+            messagebox.showwarning("Внимание", "Список целевых хостов пуст! Добавьте хосты для проверки.")
+            return
+
+        bat_file = self.bat_path_var.get()
+        if not os.path.exists(bat_file):
+            messagebox.showerror("Ошибка", f"Файл '{bat_file}' не найден!")
+            return
+
+        try:
+            params = WinwsParams(
+                tcp_split=int(self.param_vars["tcp_split"].get().strip()),
+                tcp_seqovl=int(self.param_vars["tcp_seqovl"].get().strip()),
+                tcp_ttl=int(self.param_vars["tcp_ttl"].get().strip()),
+                udp_repeats=int(self.param_vars["udp_repeats"].get().strip()),
+                udp_cutoff=str(self.param_vars["udp_cutoff"].get()).strip()
+            )
+        except ValueError:
+            messagebox.showerror("Ошибка", "Некорректные значения параметров! Убедитесь, что числа введены верно.")
+            return
+
+        self.start_btn.set_state(tk.DISABLED)
+        self.stop_btn.set_state(tk.NORMAL)
+        self.status_var.set("Выполнение разового теста...")
+
+        require_100 = self.require_100_var.get() if hasattr(self, "require_100_var") else False
+        self.engine = FuzzerEngine(
+            bat_path=bat_file,
+            log_callback=self.log_message,
+            status_callback=self._on_engine_status,
+            require_100_percent=require_100
+        )
+
+        def worker():
+            try:
+                success = self.engine.run_single_test(params, self.target_hosts)
+                if success:
+                    self.root.after(0, lambda: self._on_single_test_success(params))
+            except Exception as e:
+                err_msg = str(e)
+                self.root.after(0, lambda: self.log_message(f"[!] Ошибка выполнения разового теста: {err_msg}"))
+            finally:
+                self.root.after(0, self._on_fuzzing_finished)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_single_test_success(self, params: WinwsParams):
+        if messagebox.askyesno("Успех!", "Разовый тест прошел успешно! Применить эти параметры к .bat файлу?"):
+            if self.engine:
+                self.engine.patch_original_bat(params)
+            else:
+                temp_engine = FuzzerEngine(bat_path=self.bat_path_var.get())
+                temp_engine.patch_original_bat(params)
+            self._update_params_display(params)
+
     def _clear_hosts(self):
         self.hosts_listbox.delete(0, tk.END)
         self.target_hosts.clear()
         self.log_message("[-] Список хостов очищен.")
-
-    def _update_params_display(self, params: Optional[WinwsParams] = None):
-        if params is None:
-            try:
-                temp_engine = FuzzerEngine(bat_path=self.bat_path_var.get())
-                params = temp_engine.extract_baseline()
-            except Exception:
-                return
-
-        self.param_labels["tcp_split"].config(text=str(params.tcp_split))
-        self.param_labels["tcp_seqovl"].config(text=str(params.tcp_seqovl))
-        self.param_labels["tcp_ttl"].config(text=str(params.tcp_ttl))
-        self.param_labels["udp_repeats"].config(text=str(params.udp_repeats))
-        self.param_labels["udp_cutoff"].config(text=str(params.udp_cutoff))
 
     def _start_fuzzing(self):
         if not self.target_hosts:
@@ -951,15 +800,22 @@ class ZapretFuzzerApp:
         self.status_var.set("Асинхронный подбор в процессе...")
         self.analytics_chart.clear_data()
 
+        require_100 = self.require_100_var.get() if hasattr(self, "require_100_var") else False
         self.engine = FuzzerEngine(
             bat_path=bat_file,
             log_callback=self.log_message,
-            status_callback=self._on_engine_status
+            status_callback=self._on_engine_status,
+            require_100_percent=require_100
         )
 
         def worker():
-            self.engine.run_fuzzing(self.target_hosts)
-            self.root.after(0, self._on_fuzzing_finished)
+            try:
+                self.engine.run_fuzzing(self.target_hosts)
+            except Exception as e:
+                err_msg = str(e)
+                self.root.after(0, lambda: self.log_message(f"[!] Ошибка асинхронного подбора: {err_msg}"))
+            finally:
+                self.root.after(0, self._on_fuzzing_finished)
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -976,25 +832,27 @@ class ZapretFuzzerApp:
 
     def _on_engine_status(self, status_dict: dict):
         if "params" in status_dict:
-            self.root.after(0, lambda: self._update_params_display(status_dict["params"]))
+            self.root.after(0, lambda p=status_dict["params"]: self._update_params_display(p))
         if "message" in status_dict:
-            self.status_var.set(status_dict["message"])
+            m = status_dict["message"]
+            self.root.after(0, lambda: self.status_var.set(m))
 
     def log_message(self, text: str):
         self.log_queue.put(text)
-        if "Результат:" in text and "доступно" in text:
+
+    def _append_log_with_tags(self, msg: str):
+        if "Результат:" in msg and "доступно" in msg:
             try:
-                parts = text.split("Результат:").strip().split()
+                parts = msg.split("Результат:").strip().split()
                 counts = parts[0].split("/")
                 passed, total = int(counts[0]), int(counts)
                 rate_pct = round((passed / max(1, total)) * 100.0, 1)
 
-                step_name = "Р "
-                self.root.after(0, lambda: self.analytics_chart.add_data_point(step_name, rate_pct, 45.0))
+                step_name = "Р"
+                self.analytics_chart.add_data_point(step_name, rate_pct, 45.0)
             except Exception:
                 pass
 
-    def _append_log_with_tags(self, msg: str):
         if msg.startswith("[+]"):
             self.log_text.insert(tk.END, msg[:3], "plus")
             self.log_text.insert(tk.END, msg[3:] + "\n")

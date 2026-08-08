@@ -7,14 +7,15 @@ import re
 import os
 import ipaddress
 import subprocess
-from typing import List, Dict
+import copy
+from typing import List, Dict, Tuple
 
 HISTORY_FILE = "history.json"
 
-# Официальные домены заблокированных и замедляемых сервисов
+# База официальных доменов популярных заблокированных / замедляемых сервисов
 DEFAULT_GAME_PRESETS: Dict[str, Dict[str, List[str]]] = {
     "Discord": {
-        "description": "Discord голос, чаты, CDN и медиа",
+        "description": "Discord голос, чаты, CDN, RTC и медиа",
         "domains": [
             "discord.com",
             "discord.gg",
@@ -25,18 +26,24 @@ DEFAULT_GAME_PRESETS: Dict[str, Dict[str, List[str]]] = {
             "cdn.discordapp.com",
             "media.discordapp.net",
             "router.discordapp.net",
-            "gateway.discord.gg"
+            "gateway.discord.gg",
+            "discordapp.io",
+            "discord.co",
+            "discord.dev",
+            "discord.statuspage.io",
+            "dis.gd"
         ]
     },
     "YouTube": {
-        "description": "YouTube видео и CDN сервера",
+        "description": "YouTube видео и CDN сервера (googlevideo)",
         "domains": [
             "youtube.com",
             "googlevideo.com",
             "ytimg.com",
             "youtu.be",
             "youtubei.googleapis.com",
-            "yt3.ggpht.com"
+            "yt3.ggpht.com",
+            "www.youtube.com"
         ]
     },
     "Telegram": {
@@ -182,18 +189,16 @@ def search_app_hosts_online(app_name: str) -> List[str]:
     clean_alnum = re.sub(r'[^a-zA-Z0-9]', '', app_clean)
     found_targets = set()
 
-    # 1. Если введено прямое доменное имя
     if "." in app_clean and " " not in app_clean:
-        domain = app_clean.lstrip("https://").lstrip("http://").split("/")[0]
+        domain = re.sub(r'^https?://', '', app_clean).split("/")[0]
         found_targets.add(domain)
         if not domain.startswith("www."):
             found_targets.add(f"www.{domain}")
         save_to_history(app_name, list(found_targets))
         return list(found_targets)
 
-    # 2. Поиск по известным сопоставлениям
     known_aliases = {
-        "discord": ["discord.com", "discord.gg", "discord.media", "discordapp.com", "discordapp.net", "cdn.discordapp.com", "media.discordapp.net", "gateway.discord.gg"],
+        "discord": ["discord.com", "discord.gg", "discord.media", "discordapp.com", "discordapp.net", "cdn.discordapp.com", "media.discordapp.net", "gateway.discord.gg", "router.discordapp.net"],
         "youtube": ["youtube.com", "googlevideo.com", "ytimg.com", "youtu.be", "youtubei.googleapis.com", "yt3.ggpht.com"],
         "telegram": ["t.me", "telegram.org", "telegram.me", "web.telegram.org", "api.telegram.org"],
         "steam": ["steampowered.com", "steamcommunity.com", "steamcontent.com", "steamstatic.com"],
@@ -217,18 +222,13 @@ def search_app_hosts_online(app_name: str) -> List[str]:
         if alias_key in clean_alnum:
             found_targets.update(alias_domains)
 
-    # 3. Поиск по встроенным пресетам
     for preset, data in DEFAULT_GAME_PRESETS.items():
         if app_clean in preset.lower() or preset.lower() in app_clean:
             found_targets.update(data["domains"])
 
-    # 4. Если запущен соответствующий процесс в Windows, снимаем его IP
-    process_ips = capture_active_process_ips(clean_alnum)
-    found_targets.update(process_ips)
-
-    # 5. Фолбэк для неизвестных одиночных названий
     if not found_targets and clean_alnum:
-        found_targets.add(f"{clean_alnum}.com")
+        fallback_dom = f"{clean_alnum}.com"
+        found_targets.add(fallback_dom)
 
     final_hosts = list(found_targets)
     if final_hosts:
@@ -249,3 +249,56 @@ def fetch_preset_targets(preset_name: str, resolve_ips: bool = False) -> List[st
         return []
 
     return list(all_presets[preset_name]["domains"])
+
+
+def export_presets_to_file(filepath: str) -> bool:
+    """Экспортирует все пресеты (включая встроенные и историю) в JSON файл."""
+    all_presets = copy.deepcopy(DEFAULT_GAME_PRESETS)
+    history = load_history()
+
+    for hist_app, hist_hosts in history.items():
+        if hist_app in all_presets:
+            merged = list(dict.fromkeys(all_presets[hist_app].get("domains", []) + hist_hosts))
+            all_presets[hist_app]["domains"] = merged
+        else:
+            all_presets[hist_app] = {
+                "description": f"Пользовательский пресет {hist_app}",
+                "domains": hist_hosts
+            }
+
+    try:
+        with open(filepath, 'w', encoding='utf-8') as f:
+            json.dump(all_presets, f, ensure_ascii=False, indent=4)
+        return True
+    except Exception:
+        return False
+
+
+def import_presets_from_file(filepath: str) -> Tuple[bool, int]:
+    """
+    Импортирует пресеты из JSON файла и сохраняет их в историю.
+    Поддерживает словари вида {"Name": ["dom1", "dom2"]} или {"Name": {"domains": [...]}}.
+    Возвращает (success, count_imported_presets).
+    """
+    try:
+        with open(filepath, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+
+        if not isinstance(data, dict):
+            return False, 0
+
+        imported_count = 0
+        for app_name, val in data.items():
+            hosts = []
+            if isinstance(val, list):
+                hosts = [str(h).strip() for h in val if isinstance(h, str) and str(h).strip()]
+            elif isinstance(val, dict) and "domains" in val and isinstance(val["domains"], list):
+                hosts = [str(h).strip() for h in val["domains"] if isinstance(h, str) and str(h).strip()]
+
+            if hosts:
+                save_to_history(app_name, hosts)
+                imported_count += 1
+
+        return True, imported_count
+    except Exception:
+        return False, 0
