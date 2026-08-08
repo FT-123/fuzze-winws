@@ -64,30 +64,12 @@
 
 ### Требования
 - **ОС**: Windows 10/11 (требуются права администратора для работы `WinDivert` и `winws`).
-- **Python**: 3.10 или новее.
 - Установленный и настроенный пакет `Zapret` с исполняемым файлом `winws.exe`.
 
-### Запуск из исходного кода
-
-1. Клонируйте репозиторий:
-   ```bash
-   git clone [https://github.com/FT-123/fuzze-winws.git](https://github.com/FT-123/fuzze-winws.git)
-   cd fuzze-winws
-
-```
-
-2. Установите необходимые зависимости:
-```bash
-pip install -r requirements.txt
-
-```
-
-
-*(При отсутствии `requirements.txt` убедитесь в наличии `pystray`, `Pillow` и стандартных библиотек Python)*.
-3. Запустите приложение от имени администратора:
-```bash
-python main.py
-
+### fuzzer.exe
+1. Скачать последнюю версию fuzzer.exe в Releases
+2. Поместить в папку за Zapret
+3. Запустите приложение от имени администратора
 ```
 
 
