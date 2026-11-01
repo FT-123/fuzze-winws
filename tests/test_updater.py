@@ -64,11 +64,22 @@ def test_update_script_contains_silent_install():
         r"C:\Temp\setup.exe", r"C:\App\fuzzer.exe", pid=1234
     )
     assert 'set "PID=1234"' in script
-    assert "PID eq %PID%" in script
+    assert 'PID eq %PID%' in script
     assert r"C:\Temp\setup.exe" in script
     assert r"C:\App\fuzzer.exe" in script
     assert "/VERYSILENT" in script
     assert "/NORESTART" in script
+
+
+def test_update_script_has_wait_timeout_and_kill():
+    script = build_update_script(
+        r"C:\Temp\setup.exe", r"C:\App\fuzzer.exe", pid=1234
+    )
+    # PID ищем вместе с пробелами, иначе find ловит цифры из поля памяти.
+    assert 'findstr /C:" %PID% "' in script
+    # Если приложение не закрылось — принудительное завершение вместо вечного цикла.
+    assert "taskkill /F /PID %PID%" in script
+    assert "GEQ 45" in script
 
 
 def test_launch_update_disabled_for_source_runs(tmp_path):

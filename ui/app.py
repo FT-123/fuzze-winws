@@ -34,7 +34,7 @@ from version import __version__
 from ui.components import RoundedButton, StyledCard, GradientFooterCanvas, FuzzingMetricsFrame
 from ui import theme
 from ui.theme import MONO, MONO_FAMILY, font as ui_font, setup_ttk
-from ui.tray import TrayManager
+from ui.tray import HAS_PYSTRAY, TrayManager
 from ui.dialogs import DomainListsDialog, HistoryDialog, InteractiveParamsWindow
 
 
@@ -85,6 +85,7 @@ class ZapretFuzzerApp:
         self._check_winws_periodically()
         self.root.after(200, self._update_params_display)
         self.root.after(300, self._validate_engine_assets)
+        self.root.after(320, self._log_tray_backend)
         self.root.after(500, self._tick_elapsed)
         self.root.after(2000, self._check_updates_silently)
 
@@ -833,6 +834,14 @@ class ZapretFuzzerApp:
     def _minimize_to_tray(self):
         self.tray_manager.minimize_to_tray()
 
+    def _log_tray_backend(self) -> None:
+        if HAS_PYSTRAY:
+            self.log_message("[i] Трей: системный значок (pystray).")
+        else:
+            self.log_message(
+                "[!] Трей: pystray не найден, используется компактный оверлей."
+            )
+
     def _restore_saved_targets(self):
         settings = load_settings()
         saved_mode = settings.get("search_mode")
@@ -1282,22 +1291,40 @@ class ZapretFuzzerApp:
 
     def _finish_update(self, installer_path: str) -> None:
         self.log_message("[*] Останавливаю движок и запускаю установщик...")
-        if self.engine:
-            self.engine.stop()
-        FuzzerEngine.stop_winws()
+        try:
+            if self.engine:
+                self.engine.stop()
+            FuzzerEngine.stop_winws()
+        except Exception as error:
+            self.log_message(f"[!] Не удалось остановить движок: {error}")
         self._service_running = False
 
-        if not launch_update(installer_path):
+        try:
+            ok = launch_update(installer_path)
+        except Exception as error:
+            self._update_error(f"Не удалось запустить установщик обновления: {error}")
+            return
+
+        if not ok:
             self._update_error("Не удалось запустить установщик обновления.")
             return
 
         self.log_message("[+] Установщик запущен. Приложение перезапустится после обновления.")
         self.status_var.set("Установка обновления...")
-        self.root.after(800, self._exit_for_update)
+        self.root.after(600, self._exit_for_update)
 
     def _exit_for_update(self) -> None:
-        self.tray_manager.stop()
-        self.root.destroy()
+        """Завершает процесс, чтобы установщик мог заменить файлы."""
+        try:
+            self.tray_manager.stop()
+        except Exception:
+            pass
+        try:
+            self.root.destroy()
+        except Exception:
+            pass
+        # Гарантированный выход: update-bat ждёт исчезновения именно этого PID.
+        os._exit(0)
 
     def _browse_bat(self):
         file_selected = filedialog.askopenfilename(

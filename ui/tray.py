@@ -121,13 +121,22 @@ class TrayManager:
             "Zapret Strategy Tuner",
             menu,
         )
-        self.icon.run_detached()
+        try:
+            self.icon.run_detached()
+        except Exception:
+            # Трей недоступен (например, нет бэкенда) — показываем оверлей.
+            self.icon = None
+            raise
 
     def minimize_to_tray(self) -> None:
         self.root.withdraw()
         if HAS_PYSTRAY:
-            self._start_pystray()
-        elif not self.mini_overlay or not self.mini_overlay.winfo_exists():
+            try:
+                self._start_pystray()
+                return
+            except Exception:
+                pass
+        if not self.mini_overlay or not self.mini_overlay.winfo_exists():
             self.mini_overlay = MiniTrayOverlay(self.root, self.on_restore, self.on_exit)
 
     def restore_from_tray(self) -> None:

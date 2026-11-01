@@ -4,7 +4,7 @@
 
 #define MyAppName "Zapret Strategy Tuner"
 #ifndef MyAppVersion
-  #define MyAppVersion "1.0.1"
+  #define MyAppVersion "1.0.2"
 #endif
 #define MyAppPublisher "FT-123"
 #define MyAppURL "https://github.com/FT-123/fuzze-winws"

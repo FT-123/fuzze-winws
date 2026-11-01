@@ -22,7 +22,6 @@ RELEASE_API = (
 USER_AGENT = f"ZapretStrategyTuner/{__version__}"
 
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-_DETACHED = getattr(subprocess, "DETACHED_PROCESS", 0x00000008)
 _NEW_GROUP = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
 
 ProgressCallback = Callable[[int, int], None]
@@ -201,19 +200,33 @@ def download_installer(
 
 def build_update_script(installer_path: str, app_path: str, pid: Optional[int] = None) -> str:
     pid = pid or os.getpid()
+    log_path = os.path.join(tempfile.gettempdir(), "ZapretStrategyTuner-update.log")
     return rf"""@echo off
 chcp 65001 >nul
 set "PID={pid}"
 set "SETUP={installer_path}"
 set "APP={app_path}"
+set "LOG={log_path}"
+echo [%date% %time%] start pid=%PID% >> "%LOG%"
+set /a tries=0
 :wait_app
-tasklist /FI "PID eq %PID%" /NH 2>nul | find "%PID%" >nul
-if not errorlevel 1 (
-  ping -n 2 127.0.0.1 >nul
-  goto wait_app
-)
+rem Ищем PID отдельными пробелами: иначе find ловит его в поле памяти.
+tasklist /FI "PID eq %PID%" /NH 2>nul | findstr /C:" %PID% " >nul
+if errorlevel 1 goto run_setup
+set /a tries+=1
+if %tries% GEQ 45 goto kill_app
+ping -n 2 127.0.0.1 >nul
+goto wait_app
+:kill_app
+rem Приложение не закрылось само — принудительно завершаем, чтобы не висеть.
+echo [%date% %time%] kill pid=%PID% >> "%LOG%"
+taskkill /F /PID %PID% >nul 2>&1
+ping -n 2 127.0.0.1 >nul
+:run_setup
+echo [%date% %time%] run setup >> "%LOG%"
 start "" /wait "%SETUP%" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CLOSEAPPLICATIONS
-start "" "%APP%"
+echo [%date% %time%] setup exit=%errorlevel% >> "%LOG%"
+if exist "%APP%" start "" "%APP%"
 del /F /Q "%SETUP%" >nul 2>&1
 del /F /Q "%~f0" >nul 2>&1
 """
@@ -232,13 +245,26 @@ def launch_update(installer_path: str) -> bool:
     with open(script_path, "w", encoding="utf-8", newline="\r\n") as handle:
         handle.write(script)
 
+    startup = None
+    if os.name == "nt":
+        try:
+            startup = subprocess.STARTUPINFO()
+            startup.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            startup.wShowWindow = 0  # SW_HIDE
+        except AttributeError:
+            startup = None
+
     try:
         subprocess.Popen(
             ["cmd.exe", "/c", script_path],
-            creationflags=_NO_WINDOW | _DETACHED | _NEW_GROUP,
+            creationflags=_NO_WINDOW | _NEW_GROUP,
+            startupinfo=startup,
             close_fds=True,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
         )
-    except OSError:
+    except (OSError, ValueError):
         return False
     return True
 
