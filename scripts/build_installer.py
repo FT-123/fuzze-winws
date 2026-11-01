@@ -153,6 +153,12 @@ def stage_files(exe: Path) -> None:
             continue
         shutil.copy2(bat, STAGE / bat.name)
 
+    # Шаблон zapret2 всегда берём из репозитория, чтобы локальная сборка
+    # не утащила устаревшую копию из корня.
+    template = ROOT / "templates" / "general (ZAPRET2).bat"
+    if template.is_file():
+        shutil.copy2(template, STAGE / template.name)
+
     # В установщик не должны попасть личные данные и результаты запусков.
     for forbidden in (
         "settings.json",

@@ -157,21 +157,41 @@ def _write_bat(path: str, content: str, has_bom: bool) -> None:
         handle.write(data)
 
 
+#: Значения GameFilter, которые обычно выставляет ``service.bat load_game_filter``.
+#: service.bat в неинтерактивном режиме не поддерживает часть команд и открывает
+#: меню, поэтому переменные считаем сами (заодно чиним старые auto-config.bat,
+#: где использовались несуществующие GameFilterTCP/GameFilterUDP).
+_GAME_FILTER_BLOCK = (
+    'set "GameFilter=12"\r\n'
+    'if exist "%~dp0utils\\game_filter.enabled" set "GameFilter=1024-65535"\r\n'
+    'set "GameFilterTCP=%GameFilter%"\r\n'
+    'set "GameFilterUDP=%GameFilter%"'
+)
+
+
 def _sanitize_bat_for_run(content: str, bat_dir: str) -> str:
-    """Убирает интерактивные вызовы service.bat/pause и фиксирует cwd."""
+    """Убирает интерактивные вызовы service.bat/pause и фиксирует cwd.
+
+    Любой вызов ``service.bat`` из стратегии опасен: неизвестные команды
+    (например, ``load_user_lists``) не обрабатываются, и service.bat
+    перезапускает себя с правами администратора, открывая меню.
+    """
     lines = []
     for line in content.splitlines():
-        stripped = line.strip().lower()
-        if stripped.startswith("call service.bat status_zapret"):
+        stripped = line.strip()
+        lowered = stripped.lower()
+        if lowered.startswith("::") or lowered.startswith("rem "):
+            lines.append(line)
             continue
-        if stripped.startswith("call service.bat check_updates"):
+        if "service.bat" in lowered:
             continue
-        if stripped == "pause":
+        if lowered == "pause" or lowered.startswith("pause "):
             continue
         lines.append(line)
 
     prefix = f'@cd /d "{bat_dir}"'
-    return prefix + "\r\n" + "\r\n".join(lines) + "\r\n"
+    body = "\r\n".join(lines)
+    return f"{prefix}\r\n{_GAME_FILTER_BLOCK}\r\n{body}\r\n"
 
 
 # ---------------------------------------------------------------------------

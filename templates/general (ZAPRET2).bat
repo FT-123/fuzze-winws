@@ -4,8 +4,10 @@ chcp 65001 > nul
 :: Zapret2 (winws2 / Lua) general strategy
 
 cd /d "%~dp0"
-call service.bat load_game_filter
-call service.bat load_user_lists
+:: GameFilter вычисляется на месте: service.bat в неинтерактивном режиме
+:: не поддерживает load_user_lists и открывает меню администратора.
+set "GameFilter=12"
+if exist "%~dp0utils\game_filter.enabled" set "GameFilter=1024-65535"
 echo:
 
 set "BIN=%~dp0bin\"
@@ -15,8 +17,8 @@ set "FAKE=%~dp0files\fake\"
 cd /d %BIN%
 
 start "zapret2: %~n0" /min "%BIN%winws2.exe" ^
- --wf-tcp-out=80,443,2053,2083,2087,2096,8443,%GameFilterTCP% ^
- --wf-udp-out=443,19294-19344,50000-50100,%GameFilterUDP% ^
+ --wf-tcp-out=80,443,2053,2083,2087,2096,8443,%GameFilter% ^
+ --wf-udp-out=443,19294-19344,50000-50100,%GameFilter% ^
  --lua-init=@"%LUA%zapret-lib.lua" ^
  --lua-init=@"%LUA%zapret-antidpi.lua" ^
  --lua-init="fake_default_tls = tls_mod(fake_default_tls,'rnd,dupsid')" ^
