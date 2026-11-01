@@ -1,0 +1,44 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.pyd
+.pytest_cache/
+.mypy_cache/
+
+# --- IDE / local agent state ---
+.idea/
+.continue/
+.serena/
+
+# --- Сборка ---
+build/
+dist/
+main.build/
+main.dist/
+main.onefile-build/
+fuzzer.exe
+_fuzzer_new.exe
+_updater.bat
+fuzzer_error.log
+
+# --- Временные файлы движка ---
+_fuzzer_temp.bat
+_fuzzer_run.bat
+comp.txt
+
+# --- Пользовательские данные ---
+history.json
+settings.json
+auto-config.bat
+*.bak
+
+# --- Движок zapret (сторонние файлы из релиза Flowseal) ---
+/bin/
+/lists/
+/utils/
+/service.bat
+/general*.bat
+/lua/
+/files/
+/logs/
+/runtime/

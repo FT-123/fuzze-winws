@@ -1,19 +1,16 @@
-import socket
-import concurrent.futures
+"""Пресеты приложений, история и вспомогательные функции поиска хостов."""
 import json
-import urllib.request
-import urllib.parse
-import re
 import os
-import ipaddress
+import re
 import subprocess
-import copy
-from typing import List, Dict, Tuple
+from typing import Dict, List, Optional
+from urllib.parse import urlparse
 
-HISTORY_FILE = "history.json"
+from config import HISTORY_FILE
+from validators import is_valid_domain, is_valid_public_ip  # noqa: F401 (реэкспорт для тестов)
 
-# База официальных доменов популярных заблокированных / замедляемых сервисов
-DEFAULT_GAME_PRESETS: Dict[str, Dict[str, List[str]]] = {
+# База официальных доменов популярных заблокированных / замедляемых сервисов.
+DEFAULT_GAME_PRESETS: Dict[str, Dict[str, object]] = {
     "Discord": {
         "description": "Discord голос, чаты, CDN, RTC и медиа",
         "domains": [
@@ -31,8 +28,8 @@ DEFAULT_GAME_PRESETS: Dict[str, Dict[str, List[str]]] = {
             "discord.co",
             "discord.dev",
             "discord.statuspage.io",
-            "dis.gd"
-        ]
+            "dis.gd",
+        ],
     },
     "YouTube": {
         "description": "YouTube видео и CDN сервера (googlevideo)",
@@ -43,8 +40,8 @@ DEFAULT_GAME_PRESETS: Dict[str, Dict[str, List[str]]] = {
             "youtu.be",
             "youtubei.googleapis.com",
             "yt3.ggpht.com",
-            "www.youtube.com"
-        ]
+            "www.youtube.com",
+        ],
     },
     "Telegram": {
         "description": "Telegram мессенджер, голос и веб-версия",
@@ -53,8 +50,8 @@ DEFAULT_GAME_PRESETS: Dict[str, Dict[str, List[str]]] = {
             "telegram.org",
             "telegram.me",
             "web.telegram.org",
-            "api.telegram.org"
-        ]
+            "api.telegram.org",
+        ],
     },
     "Steam": {
         "description": "Steam магазин, сообщество и инвентарь",
@@ -62,16 +59,12 @@ DEFAULT_GAME_PRESETS: Dict[str, Dict[str, List[str]]] = {
             "steampowered.com",
             "steamcommunity.com",
             "steamstatic.com",
-            "steamcontent.com"
-        ]
+            "steamcontent.com",
+        ],
     },
     "Twitch": {
         "description": "Twitch стримы и чаты",
-        "domains": [
-            "twitch.tv",
-            "ttvnw.net",
-            "jtvnw.net"
-        ]
+        "domains": ["twitch.tv", "ttvnw.net", "jtvnw.net"],
     },
     "ChatGPT / OpenAI": {
         "description": "ChatGPT и API OpenAI",
@@ -79,226 +72,375 @@ DEFAULT_GAME_PRESETS: Dict[str, Dict[str, List[str]]] = {
             "chatgpt.com",
             "openai.com",
             "oaistatic.com",
-            "oaiusercontent.com"
-        ]
+            "oaiusercontent.com",
+        ],
     },
     "Instagram & Meta": {
         "description": "Instagram, Facebook и CDN",
-        "domains": [
-            "instagram.com",
-            "cdninstagram.com",
-            "facebook.com",
-            "fbcdn.net"
-        ]
+        "domains": ["instagram.com", "cdninstagram.com", "facebook.com", "fbcdn.net"],
     },
     "Twitter / X": {
         "description": "X (Twitter) и медиа-сервера",
-        "domains": [
-            "x.com",
-            "twitter.com",
-            "twimg.com"
-        ]
+        "domains": ["x.com", "twitter.com", "twimg.com"],
     },
     "Notion": {
         "description": "Notion заметки и базы знаний",
-        "domains": [
-            "notion.so",
-            "notion.site",
-            "notion.new"
-        ]
+        "domains": ["notion.so", "notion.site", "notion.new"],
     },
     "Spotify": {
         "description": "Spotify музыка и подкасты",
-        "domains": [
-            "spotify.com",
-            "scdn.co",
-            "spotifycdn.com"
-        ]
+        "domains": ["spotify.com", "scdn.co", "spotifycdn.com"],
     },
-    "Rainbow Six Siege": {
-        "description": "Ubisoft & Rainbow Six Siege сервера",
+    "Gemini": {
+        "description": "Google Gemini, AI Studio и Vertex AI",
         "domains": [
-            "ubisoft.com",
-            "ubi.com",
-            "public-ubiservices.ubi.com",
-            "ubiservices.ubi.com",
-            "game-rainbow6.ubisoft.com",
-            "r6s-stats.ubisoft.com",
-            "connect.ubisoft.com",
-            "uplay.com"
-        ]
-    }
+            "generativelanguage.googleapis.com",
+            "us-central1-aiplatform.googleapis.com",
+            "europe-west3-aiplatform.googleapis.com",
+            "gemini.google.com",
+            "aistudio.google.com",
+            "accounts.google.com",
+            "myactivity.google.com",
+            "workspace.google.com",
+        ],
+    },
+}
+
+_KNOWN_ALIASES: Dict[str, List[str]] = {
+    "discord": ["discord.com", "discord.gg", "discord.media", "discordapp.com", "discordapp.net", "cdn.discordapp.com", "media.discordapp.net", "gateway.discord.gg", "router.discordapp.net"],
+    "youtube": ["youtube.com", "googlevideo.com", "ytimg.com", "youtu.be", "youtubei.googleapis.com", "yt3.ggpht.com"],
+    "telegram": ["t.me", "telegram.org", "telegram.me", "web.telegram.org", "api.telegram.org"],
+    "steam": ["steampowered.com", "steamcommunity.com", "steamcontent.com", "steamstatic.com"],
+    "twitch": ["twitch.tv", "ttvnw.net", "jtvnw.net"],
+    "chatgpt": ["chatgpt.com", "openai.com", "oaistatic.com", "oaiusercontent.com"],
+    "openai": ["chatgpt.com", "openai.com", "oaistatic.com", "oaiusercontent.com"],
+    "instagram": ["instagram.com", "cdninstagram.com"],
+    "facebook": ["facebook.com", "fbcdn.net"],
+    "twitter": ["x.com", "twitter.com", "twimg.com"],
+    "x": ["x.com", "twitter.com", "twimg.com"],
+    "notion": ["notion.so", "notion.site", "notion.new"],
+    "spotify": ["spotify.com", "scdn.co", "spotifycdn.com"],
+    "rutracker": ["rutracker.org", "rutracker.cc", "rutracker.net"],
+    "genshin": ["hoyoverse.com", "mihoyo.com", "genshinimpact.com"],
+    "apex": ["ea.com", "respawn.com"],
+    "valorant": ["riotgames.com", "pvp.net"],
+    "minecraft": ["minecraft.net", "mojang.com"],
+    "gemini": ["gemini.google.com", "generativelanguage.googleapis.com", "aistudio.google.com"],
 }
 
 
-def is_valid_public_ip(ip_str: str) -> bool:
-    """Проверяет, что IP адрес является публичным (не loopback, private, bogon)."""
+# ---------------------------------------------------------------------------
+# История (пресеты + успешные/неуспешные сессии подбора)
+# ---------------------------------------------------------------------------
+
+def _dedupe(values) -> List[str]:
+    seen = set()
+    result = []
+    for value in values:
+        item = str(value).strip()
+        if item and item.lower() not in seen:
+            seen.add(item.lower())
+            result.append(item)
+    return result
+
+
+def _empty_store() -> Dict[str, object]:
+    return {"presets": {}, "sessions": []}
+
+
+def _read_store() -> Dict[str, object]:
+    """Читает history.json и мигрирует старый формат {app: [hosts]}."""
+    if not os.path.isfile(HISTORY_FILE):
+        return _empty_store()
+
     try:
-        ip = ipaddress.ip_address(ip_str)
-        return not (ip.is_private or ip.is_loopback or ip.is_multicast or ip.is_unspecified or ip.is_reserved)
-    except ValueError:
-        return False
+        with open(HISTORY_FILE, "r", encoding="utf-8") as handle:
+            raw = json.load(handle)
+    except (OSError, ValueError):
+        return _empty_store()
+
+    if not isinstance(raw, dict):
+        return _empty_store()
+
+    if "presets" in raw or "sessions" in raw:
+        presets = raw.get("presets")
+        sessions = raw.get("sessions")
+        return {
+            "presets": presets if isinstance(presets, dict) else {},
+            "sessions": sessions if isinstance(sessions, list) else [],
+        }
+
+    # Старый формат: { "Discord": ["discord.com", ...], ... }
+    legacy = {
+        str(name): _dedupe(hosts)
+        for name, hosts in raw.items()
+        if isinstance(hosts, list)
+    }
+    return {"presets": legacy, "sessions": []}
+
+
+def _write_store(store: Dict[str, object]) -> None:
+    directory = os.path.dirname(os.path.abspath(HISTORY_FILE))
+    os.makedirs(directory, exist_ok=True)
+    temp_path = HISTORY_FILE + ".tmp"
+    with open(temp_path, "w", encoding="utf-8") as handle:
+        json.dump(store, handle, ensure_ascii=False, indent=2)
+    os.replace(temp_path, HISTORY_FILE)
 
 
 def load_history() -> Dict[str, List[str]]:
-    """Загружает историю поисков из JSON файла."""
-    if os.path.exists(HISTORY_FILE):
-        try:
-            with open(HISTORY_FILE, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        except Exception:
-            return {}
-    return {}
+    """Загружает сохранённые пресеты {имя: [хосты]}."""
+    store = _read_store()
+    presets = store.get("presets", {})
+    if not isinstance(presets, dict):
+        return {}
+    return {
+        str(name): _dedupe(hosts)
+        for name, hosts in presets.items()
+        if isinstance(hosts, list)
+    }
 
 
-def save_to_history(app_name: str, hosts: List[str]):
-    """Сохраняет найденное приложение и его хосты в историю."""
-    history = load_history()
-    history[app_name] = hosts
+def save_to_history(app_name: str, hosts: List[str]) -> None:
+    """Сохраняет пресет приложения в историю."""
+    name = str(app_name).strip()
+    if not name:
+        return
+
+    store = _read_store()
+    presets = store["presets"]  # type: ignore[index]
+    presets[name] = _dedupe(hosts)  # type: ignore[index]
     try:
-        with open(HISTORY_FILE, 'w', encoding='utf-8') as f:
-            json.dump(history, f, ensure_ascii=False, indent=4)
-    except Exception:
+        _write_store(store)
+    except OSError:
         pass
 
+
+def load_sessions() -> List[Dict[str, object]]:
+    """Возвращает историю запусков подбора (новые записи первыми)."""
+    store = _read_store()
+    sessions = store.get("sessions", [])
+    if not isinstance(sessions, list):
+        return []
+    return [item for item in reversed(sessions) if isinstance(item, dict)]
+
+
+def add_session(record: Dict[str, object]) -> None:
+    """Добавляет запись о запуске подбора в историю (максимум 200 записей)."""
+    store = _read_store()
+    sessions = store.get("sessions", [])
+    if not isinstance(sessions, list):
+        sessions = []
+    sessions.append(record)
+    store["sessions"] = sessions[-200:]
+    try:
+        _write_store(store)
+    except OSError:
+        pass
+
+
+# ---------------------------------------------------------------------------
+# Пресеты и поиск хостов
+# ---------------------------------------------------------------------------
 
 def capture_active_process_ips(process_name: str) -> List[str]:
-    """
-    Перехватывает целевые IP-адреса активных сетевых подключений процесса в Windows (PowerShell).
-    """
-    active_ips = set()
-    if os.name != 'nt' or not process_name:
+    """Возвращает публичные удалённые IP активных соединений процесса (Windows)."""
+    if os.name != "nt" or not process_name:
         return []
+
+    safe_name = re.sub(r"[^A-Za-z0-9_.-]", "", process_name)
+    if not safe_name:
+        return []
+
+    script = (
+        "Get-NetTCPConnection | "
+        "Where-Object { (Get-Process -Id $_.OwningProcess -ErrorAction SilentlyContinue)."
+        f"ProcessName -like '*{safe_name}*' }} | "
+        "Select-Object -ExpandProperty RemoteAddress"
+    )
     try:
-        cmd = f"powershell -Command \"Get-NetTCPConnection | Where-Object {{ (Get-Process -Id $_.OwningProcess -ErrorAction SilentlyContinue).ProcessName -like '*{process_name}*' }} | Select-Object -ExpandProperty RemoteAddress\""
-        output = subprocess.check_output(cmd, shell=True, text=True, stderr=subprocess.DEVNULL)
-        for line in output.splitlines():
-            ip = line.strip()
-            if is_valid_public_ip(ip):
-                active_ips.add(ip)
-    except Exception:
-        pass
-    return list(active_ips)
+        output = subprocess.check_output(
+            ["powershell", "-NoProfile", "-Command", script],
+            text=True,
+            stderr=subprocess.DEVNULL,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            timeout=20,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
+
+    return _dedupe(ip.strip() for ip in output.splitlines() if is_valid_public_ip(ip.strip()))
+
+
+def _normalise_domain(application: str) -> Optional[str]:
+    """Пытается извлечь домен из строки вида ``https://example.com/path``."""
+    value = application.strip().lower()
+    if not value:
+        return None
+
+    if "://" in value or "/" in value:
+        parsed = urlparse(value if "://" in value else "http://" + value)
+        candidate = (parsed.hostname or "").lower()
+    else:
+        candidate = value
+
+    candidate = candidate.strip(".")
+    return candidate if is_valid_domain(candidate) else None
 
 
 def search_app_hosts_online(app_name: str) -> List[str]:
-    """
-    Точный поиск хостов приложения/сайта без шума и мусорных IP.
+    """Ищет известные домены приложения по имени или домену.
+
+    Онлайн-поиска здесь нет: используются встроенные пресеты и таблица
+    псевдонимов. Возвращает пустой список, если ничего не найдено (никаких
+    выдуманных ``<name>.com``).
     """
     app_clean = app_name.strip().lower()
-    clean_alnum = re.sub(r'[^a-zA-Z0-9]', '', app_clean)
-    found_targets = set()
+    if not app_clean:
+        return []
 
-    if "." in app_clean and " " not in app_clean:
-        domain = re.sub(r'^https?://', '', app_clean).split("/")[0]
-        found_targets.add(domain)
-        if not domain.startswith("www."):
-            found_targets.add(f"www.{domain}")
-        save_to_history(app_name, list(found_targets))
-        return list(found_targets)
+    found = set()
 
-    known_aliases = {
-        "discord": ["discord.com", "discord.gg", "discord.media", "discordapp.com", "discordapp.net", "cdn.discordapp.com", "media.discordapp.net", "gateway.discord.gg", "router.discordapp.net"],
-        "youtube": ["youtube.com", "googlevideo.com", "ytimg.com", "youtu.be", "youtubei.googleapis.com", "yt3.ggpht.com"],
-        "telegram": ["t.me", "telegram.org", "telegram.me", "web.telegram.org", "api.telegram.org"],
-        "steam": ["steampowered.com", "steamcommunity.com", "steamcontent.com", "steamstatic.com"],
-        "twitch": ["twitch.tv", "ttvnw.net", "jtvnw.net"],
-        "chatgpt": ["chatgpt.com", "openai.com", "oaistatic.com", "oaiusercontent.com"],
-        "openai": ["chatgpt.com", "openai.com", "oaistatic.com", "oaiusercontent.com"],
-        "instagram": ["instagram.com", "cdninstagram.com"],
-        "facebook": ["facebook.com", "fbcdn.net"],
-        "twitter": ["x.com", "twitter.com", "twimg.com"],
-        "x": ["x.com", "twitter.com", "twimg.com"],
-        "notion": ["notion.so", "notion.site", "notion.new"],
-        "spotify": ["spotify.com", "scdn.co", "spotifycdn.com"],
-        "rutracker": ["rutracker.org", "rutracker.cc", "rutracker.net"],
-        "genshin": ["hoyoverse.com", "mihoyo.com", "genshinimpact.com"],
-        "apex": ["ea.com", "respawn.com"],
-        "valorant": ["riotgames.com", "pvp.net"],
-        "minecraft": ["minecraft.net", "mojang.com"]
-    }
+    domain = _normalise_domain(app_clean)
+    if domain:
+        hosts = _dedupe([domain, "www." + domain] if not domain.startswith("www.") else [domain])
+        save_to_history(app_name, hosts)
+        return hosts
 
-    for alias_key, alias_domains in known_aliases.items():
-        if alias_key in clean_alnum:
-            found_targets.update(alias_domains)
+    words = re.findall(r"[a-z0-9]+", app_clean)
+    word_set = set(words)
+    compact = re.sub(r"[^a-z0-9]", "", app_clean)
 
-    for preset, data in DEFAULT_GAME_PRESETS.items():
-        if app_clean in preset.lower() or preset.lower() in app_clean:
-            found_targets.update(data["domains"])
+    for alias, domains in _KNOWN_ALIASES.items():
+        if alias in word_set or alias == compact:
+            found.update(domains)
 
-    if not found_targets and clean_alnum:
-        fallback_dom = f"{clean_alnum}.com"
-        found_targets.add(fallback_dom)
+    for preset_name, data in DEFAULT_GAME_PRESETS.items():
+        preset_lower = preset_name.lower()
+        preset_words = set(re.findall(r"[a-z0-9]+", preset_lower))
+        if (
+            preset_lower == app_clean
+            or preset_words.issubset(word_set)
+            or compact == re.sub(r"[^a-z0-9]", "", preset_lower)
+        ):
+            found.update(data["domains"])  # type: ignore[arg-type]
 
-    final_hosts = list(found_targets)
-    if final_hosts:
-        save_to_history(app_name, final_hosts)
+    hosts = _dedupe(found)
+    if hosts:
+        save_to_history(app_name, hosts)
+    return hosts
 
-    return final_hosts
+
+def _resolve_preset_key(preset_name: str, presets: Dict[str, Dict[str, object]]) -> Optional[str]:
+    if preset_name in presets:
+        return preset_name
+
+    wanted = preset_name.strip().lower()
+    for name in presets:
+        if name.strip().lower() == wanted:
+            return name
+    for name in presets:
+        if wanted and wanted in name.strip().lower():
+            return name
+    return None
 
 
 def fetch_preset_targets(preset_name: str, resolve_ips: bool = False) -> List[str]:
-    all_presets = dict(DEFAULT_GAME_PRESETS)
-    history = load_history()
+    """Возвращает список доменов для пресета (включая пользовательскую историю)."""
+    del resolve_ips  # зарезервировано на будущее; DNS-резолв здесь не нужен
 
-    for hist_app, hist_hosts in history.items():
-        if hist_app not in all_presets:
-            all_presets[hist_app] = {"domains": hist_hosts}
+    presets: Dict[str, Dict[str, object]] = {
+        name: {"domains": list(data["domains"])}
+        for name, data in DEFAULT_GAME_PRESETS.items()
+    }
+    for history_name, hosts in load_history().items():
+        presets.setdefault(history_name, {"domains": hosts})
 
-    if preset_name not in all_presets:
+    key = _resolve_preset_key(preset_name, presets)
+    if key is None:
         return []
 
-    return list(all_presets[preset_name]["domains"])
+    domains = presets[key].get("domains", [])
+    return _dedupe(domains) if isinstance(domains, list) else []
 
 
-def export_presets_to_file(filepath: str) -> bool:
-    """Экспортирует все пресеты (включая встроенные и историю) в JSON файл."""
-    all_presets = copy.deepcopy(DEFAULT_GAME_PRESETS)
-    history = load_history()
-
-    for hist_app, hist_hosts in history.items():
-        if hist_app in all_presets:
-            merged = list(dict.fromkeys(all_presets[hist_app].get("domains", []) + hist_hosts))
-            all_presets[hist_app]["domains"] = merged
-        else:
-            all_presets[hist_app] = {
-                "description": f"Пользовательский пресет {hist_app}",
-                "domains": hist_hosts
-            }
-
+def export_presets_to_file(filepath: str, hosts: Optional[List[str]] = None) -> bool:
+    """Экспортирует пресеты (или только переданный список хостов) в JSON."""
     try:
-        with open(filepath, 'w', encoding='utf-8') as f:
-            json.dump(all_presets, f, ensure_ascii=False, indent=4)
+        if hosts is not None:
+            data: Dict[str, object] = {
+                "Экспорт": {
+                    "description": "Экспортированный список целевых доменов",
+                    "domains": _dedupe(hosts),
+                }
+            }
+        else:
+            data = {}
+            for name, preset in DEFAULT_GAME_PRESETS.items():
+                data[name] = {
+                    "description": preset.get("description", ""),
+                    "domains": list(preset["domains"]),  # type: ignore[arg-type]
+                }
+            for name, preset_hosts in load_history().items():
+                if name in data:
+                    merged = _dedupe(
+                        list(data[name]["domains"]) + preset_hosts  # type: ignore[index]
+                    )
+                    data[name]["domains"] = merged  # type: ignore[index]
+                else:
+                    data[name] = {
+                        "description": f"Пользовательский пресет {name}",
+                        "domains": preset_hosts,
+                    }
+
+        with open(filepath, "w", encoding="utf-8") as handle:
+            json.dump(data, handle, ensure_ascii=False, indent=2)
         return True
-    except Exception:
+    except OSError:
         return False
 
 
-def import_presets_from_file(filepath: str) -> Tuple[bool, int]:
-    """
-    Импортирует пресеты из JSON файла и сохраняет их в историю.
-    Поддерживает словари вида {"Name": ["dom1", "dom2"]} или {"Name": {"domains": [...]}}.
-    Возвращает (success, count_imported_presets).
+def import_presets_from_file(filepath: str) -> List[str]:
+    """Импортирует домены из JSON (пресеты/список) или TXT и возвращает их.
+
+    JSON-пресеты дополнительно сохраняются в историю под своими именами.
     """
     try:
-        with open(filepath, 'r', encoding='utf-8') as f:
-            data = json.load(f)
+        with open(filepath, "r", encoding="utf-8-sig") as handle:
+            text = handle.read()
+    except OSError:
+        return []
 
-        if not isinstance(data, dict):
-            return False, 0
+    hosts: List[str] = []
+    parsed = None
+    if filepath.lower().endswith(".json"):
+        try:
+            parsed = json.loads(text)
+        except ValueError:
+            return []
 
-        imported_count = 0
-        for app_name, val in data.items():
-            hosts = []
-            if isinstance(val, list):
-                hosts = [str(h).strip() for h in val if isinstance(h, str) and str(h).strip()]
-            elif isinstance(val, dict) and "domains" in val and isinstance(val["domains"], list):
-                hosts = [str(h).strip() for h in val["domains"] if isinstance(h, str) and str(h).strip()]
+    if isinstance(parsed, dict):
+        for name, value in parsed.items():
+            if isinstance(value, list):
+                entries = value
+            elif isinstance(value, dict) and isinstance(value.get("domains"), list):
+                entries = value["domains"]
+            else:
+                continue
 
-            if hosts:
-                save_to_history(app_name, hosts)
-                imported_count += 1
+            preset_hosts = _dedupe(
+                entry for entry in entries if isinstance(entry, str) and is_valid_domain(entry)
+            )
+            if preset_hosts:
+                save_to_history(str(name), preset_hosts)
+                hosts.extend(preset_hosts)
+    elif isinstance(parsed, list):
+        hosts.extend(entry for entry in parsed if isinstance(entry, str))
+    else:
+        hosts.extend(
+            line.strip()
+            for line in text.splitlines()
+            if line.strip() and not line.strip().startswith("#")
+        )
 
-        return True, imported_count
-    except Exception:
-        return False, 0
+    return _dedupe(host for host in hosts if is_valid_domain(host))
