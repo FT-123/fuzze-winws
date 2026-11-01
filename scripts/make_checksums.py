@@ -6,6 +6,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 INSTALLER_DIR = ROOT / "dist" / "installer"
 
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+
 
 def sha256(path: Path) -> str:
     digest = hashlib.sha256()

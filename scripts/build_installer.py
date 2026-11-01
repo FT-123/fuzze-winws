@@ -22,6 +22,10 @@ ASSETS = ROOT / "assets"
 sys.path.insert(0, str(ROOT))
 from version import __version__  # noqa: E402
 
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+
 
 def log(message: str) -> None:
     print(f"[build] {message}")
