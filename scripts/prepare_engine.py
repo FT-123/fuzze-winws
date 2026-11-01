@@ -23,8 +23,8 @@ FLOWSEAL_URL = (
     "zip/refs/tags/1.9.6"
 )
 ZAPRET2_URL = (
-    "https://codeload.github.com/bol-van/zapret2/"
-    "zip/refs/tags/v1.0.4"
+    "https://github.com/bol-van/zapret2/releases/download/v1.0.4/"
+    "zapret2-v1.0.4.zip"
 )
 PERSONAL_LISTS = {
     "list-general-user.txt",

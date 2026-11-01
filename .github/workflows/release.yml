@@ -48,19 +48,18 @@ jobs:
           path: build/upstream/flowseal
           persist-credentials: false
 
-      - name: Checkout zapret2 engine
-        uses: actions/checkout@v4
-        with:
-          repository: bol-van/zapret2
-          ref: "v1.0.4"
-          path: build/upstream/zapret2
-          persist-credentials: false
+      - name: Download zapret2 release
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path build/upstream | Out-Null
+          Invoke-WebRequest -Uri "https://github.com/bol-van/zapret2/releases/download/v1.0.4/zapret2-v1.0.4.zip" -OutFile "build/upstream/zapret2-v1.0.4.zip"
+          Expand-Archive -Path "build/upstream/zapret2-v1.0.4.zip" -DestinationPath "build/upstream/zapret2-release" -Force
 
       - name: Prepare engine
         run: |
           python scripts/prepare_engine.py `
             --flowseal-dir build/upstream/flowseal `
-            --zapret2-dir build/upstream/zapret2
+            --zapret2-dir build/upstream/zapret2-release
 
       - name: Resolve version
         shell: pwsh
